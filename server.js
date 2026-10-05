@@ -24,8 +24,7 @@ const upload = multer({
   }
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
-
+app.use(express.static(__dirname));
 function cleanSrt(text) {
   let out = String(text || '').trim();
   out = out.replace(/^```(?:srt|text)?\s*/i, '').replace(/```$/i, '').trim();
