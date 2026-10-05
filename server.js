@@ -76,8 +76,4 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
 app.listen(PORT, () => console.log(`Video to SRT running on http://localhost:${PORT}`));
