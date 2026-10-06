@@ -1,4 +1,3 @@
-```javascript
 const form = document.getElementById('form');
 
 const fileInput = document.getElementById('media');
@@ -305,4 +304,3 @@ copyBtn.addEventListener('click', async () => {
   }
 
 });
-```
