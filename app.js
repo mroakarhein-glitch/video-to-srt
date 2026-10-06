@@ -177,14 +177,13 @@ form.addEventListener('submit', async event => {
      * Until the backend is updated, this request
      * will still wait for the final response.
      */
-
-    const res = await fetch(
-      '/api/generate-srt',
-      {
-        method: 'POST',
-        body: data
-      }
-    );
+const res = await fetch(
+  'https://video-to-srt-54xt.onrender.com/api/generate-srt',
+  {
+    method: 'POST',
+    body: data
+  }
+);
 
 
     const json = await res.json();
