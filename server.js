@@ -1127,59 +1127,53 @@ app.get("/", (req, res) => {
 
 app.post(
   "/api/generate-srt",
-  upload.single("media"),
+  upload.any(),
 
   async (req, res) => {
 
     let mediaPath = null;
 
-
     try {
 
-      if (!req.file) {
+      const uploadedFile =
+        req.files?.find(file =>
+          ["media", "file", "video", "audio"]
+            .includes(file.fieldname)
+        ) || req.files?.[0];
 
+      if (!uploadedFile) {
         return res.status(400).json({
-          error:
-            "Please upload a video or audio file."
+          ok: false,
+          error: "No video or audio file was uploaded."
         });
       }
 
-
-      mediaPath =
-        req.file.path;
-
+      mediaPath = uploadedFile.path;
 
       const sourceLanguage =
         req.body.sourceLanguage ||
         "Auto detect";
 
-
       const targetLanguage =
         req.body.targetLanguage ||
         "Myanmar (Burmese)";
 
-
       console.log(
         "Starting SRT generation:",
         {
-          file: req.file.originalname,
-          size: req.file.size,
+          field: uploadedFile.fieldname,
+          file: uploadedFile.originalname,
+          size: uploadedFile.size,
           sourceLanguage,
           targetLanguage
         }
       );
 
-
-      const result =
-        await generateSrt({
-
-          mediaPath,
-
-          sourceLanguage,
-
-          targetLanguage
-        });
-
+      const result = await generateSrt({
+        mediaPath,
+        sourceLanguage,
+        targetLanguage
+      });
 
       console.log(
         "SRT generation completed:",
@@ -1187,18 +1181,12 @@ app.post(
         "cues"
       );
 
-
       return res.json({
-
         ok: true,
-
         srt: result.srt,
-
         model: result.model,
-
         cueCount: result.cueCount
       });
-
 
     } catch (error) {
 
@@ -1207,37 +1195,30 @@ app.post(
         error
       );
 
-
       let message =
         error?.message ||
         "SRT generation failed.";
 
-
       if (
         error?.code === "LIMIT_FILE_SIZE"
       ) {
-
         message =
           "File is too large. Maximum allowed size is 500MB.";
       }
-
 
       return res.status(500).json({
         ok: false,
         error: message
       });
 
-
     } finally {
 
       if (mediaPath) {
 
         try {
-
           await fs.promises.unlink(
             mediaPath
           );
-
         } catch {
           // File may already have been removed.
         }
@@ -1245,7 +1226,6 @@ app.post(
     }
   }
 );
-
 
 /* =========================================================
    ERROR HANDLER
