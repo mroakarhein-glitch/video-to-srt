@@ -39,10 +39,12 @@ const upload = multer({
   }
 });
 
-/* Serve website */
 app.use(express.static(__dirname));
 
-/* Clean Gemini response */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function cleanSrt(text) {
   let out = String(text || '').trim();
 
@@ -56,91 +58,190 @@ function cleanSrt(text) {
   return out;
 }
 
-/* Home page */
+function isRetryableError(err) {
+  const message = String(err?.message || err).toLowerCase();
+
+  return (
+    message.includes('503') ||
+    message.includes('unavailable') ||
+    message.includes('high demand') ||
+    message.includes('429') ||
+    message.includes('resource_exhausted') ||
+    message.includes('temporarily')
+  );
+}
+
+async function generateWithRetry(
+  ai,
+  uploadedFile,
+  prompt,
+  model,
+  attempts = 3
+) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      console.log(
+        `Trying Gemini model ${model} - attempt ${attempt}/${attempts}`
+      );
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: prompt
+              },
+              {
+                fileData: {
+                  fileUri: uploadedFile.uri,
+                  mimeType:
+                    uploadedFile.mimeType || 'video/mp4'
+                }
+              }
+            ]
+          }
+        ]
+      });
+
+      console.log(
+        `Gemini ${model} succeeded on attempt ${attempt}.`
+      );
+
+      return response;
+
+    } catch (err) {
+      lastError = err;
+
+      console.error(
+        `Gemini ${model} attempt ${attempt} failed:`,
+        err?.message || err
+      );
+
+      if (!isRetryableError(err)) {
+        throw err;
+      }
+
+      if (attempt < attempts) {
+        const waitTime = 5000 * Math.pow(2, attempt - 1);
+
+        console.log(
+          `Waiting ${waitTime / 1000}s before retry...`
+        );
+
+        await sleep(waitTime);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-/* Generate SRT */
-app.post('/api/generate-srt', upload.single('media'), async (req, res) => {
-  const file = req.file;
+app.post(
+  '/api/generate-srt',
+  upload.single('media'),
+  async (req, res) => {
 
-  try {
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({
-        error: 'Server is missing GEMINI_API_KEY.'
-      });
-    }
+    const file = req.file;
 
-    if (!file) {
-      return res.status(400).json({
-        error: 'Please upload a supported video or audio file.'
-      });
-    }
-
-    const targetLanguage = (
-      req.body.targetLanguage || 'Myanmar (Burmese)'
-    ).slice(0, 60);
-
-    const sourceLanguage = (
-      req.body.sourceLanguage || 'Auto detect'
-    ).slice(0, 60);
-
-    console.log('Uploaded file:', file.originalname);
-    console.log('File size:', file.size);
-    console.log('MIME:', file.mimetype);
-    console.log('Source language:', sourceLanguage);
-    console.log('Target language:', targetLanguage);
-
-    /* Gemini client */
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY
-    });
-
-    /*
-      Upload the video/audio to Gemini Files API.
-      This is better for larger media files than sending
-      the whole file as inline base64.
-    */
-    console.log('Uploading media to Gemini Files API...');
-
-    let uploadedFile = await ai.files.upload({
-      file: file.path,
-      config: {
-        mimeType: file.mimetype,
-        displayName: file.originalname
+    try {
+      if (!process.env.GEMINI_API_KEY) {
+        return res.status(500).json({
+          error: 'Server is missing GEMINI_API_KEY.'
+        });
       }
-    });
 
-    console.log('Gemini file:', uploadedFile.name);
-    console.log('Initial state:', uploadedFile.state);
+      if (!file) {
+        return res.status(400).json({
+          error:
+            'Please upload a supported video or audio file.'
+        });
+      }
 
-    /*
-      Wait until Gemini finishes processing the media.
-    */
-    while (
-      uploadedFile.state &&
-      uploadedFile.state.toString() !== 'ACTIVE'
-    ) {
-      if (uploadedFile.state.toString() === 'FAILED') {
-        throw new Error('Gemini failed to process the uploaded media.');
+      const targetLanguage = (
+        req.body.targetLanguage ||
+        'Myanmar (Burmese)'
+      ).slice(0, 60);
+
+      const sourceLanguage = (
+        req.body.sourceLanguage ||
+        'Auto detect'
+      ).slice(0, 60);
+
+      console.log('--------------------------------');
+      console.log('Uploaded file:', file.originalname);
+      console.log('File size:', file.size);
+      console.log('MIME:', file.mimetype);
+      console.log('Source:', sourceLanguage);
+      console.log('Target:', targetLanguage);
+      console.log('--------------------------------');
+
+      const ai = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY
+      });
+
+      console.log(
+        'Uploading media to Gemini Files API...'
+      );
+
+      let uploadedFile = await ai.files.upload({
+        file: file.path,
+        config: {
+          mimeType: file.mimetype,
+          displayName: file.originalname
+        }
+      });
+
+      console.log(
+        'Gemini file:',
+        uploadedFile.name
+      );
+
+      console.log(
+        'Initial state:',
+        String(uploadedFile.state || '')
+      );
+
+      while (
+        uploadedFile.state &&
+        String(uploadedFile.state).toUpperCase() !==
+          'ACTIVE'
+      ) {
+
+        const state = String(
+          uploadedFile.state || ''
+        ).toUpperCase();
+
+        if (state === 'FAILED') {
+          throw new Error(
+            'Gemini failed to process the uploaded media.'
+          );
+        }
+
+        console.log(
+          'Gemini processing media:',
+          state
+        );
+
+        await sleep(5000);
+
+        uploadedFile = await ai.files.get({
+          name: uploadedFile.name
+        });
       }
 
       console.log(
-        'Gemini is processing media...',
-        uploadedFile.state.toString()
+        'Gemini media is ACTIVE.'
       );
 
-      await new Promise(resolve => setTimeout(resolve, 5000));
-
-      uploadedFile = await ai.files.get({
-        name: uploadedFile.name
-      });
-    }
-
-    console.log('Gemini media is ACTIVE.');
-
-    const prompt = `
+      const prompt = `
 You are a professional subtitle transcription and translation system.
 
 TASK:
@@ -151,9 +252,9 @@ TASK:
 4. Target subtitle language: ${targetLanguage}.
 5. If source language is "Auto detect", identify the spoken language yourself.
 6. Translate naturally and accurately into the target language.
-7. Preserve the original meaning, names, places and important terminology.
-8. Do NOT invent dialogue that is not actually spoken.
-9. Do NOT summarize the dialogue.
+7. Preserve original meaning, names, places and important terminology.
+8. Do NOT invent dialogue.
+9. Do NOT summarize.
 10. Do NOT omit important spoken sentences.
 11. For Myanmar subtitles, use natural Myanmar Unicode.
 12. Do NOT use Zawgyi.
@@ -166,147 +267,188 @@ TASK:
 
 HH:MM:SS,mmm --> HH:MM:SS,mmm
 
-19. Subtitle timing must follow the actual speech in the video as accurately as possible.
+19. Timing should follow the actual speech as accurately as possible.
 20. Return ONLY the SRT content.
 21. Do NOT return Markdown.
-22. Do NOT put the SRT inside a code block.
+22. Do NOT use a code block.
 23. Do NOT add explanations before or after the SRT.
 
-Example format:
+Example:
 
 1
 00:00:01,000 --> 00:00:03,500
-Myanmar subtitle here.
+မြန်မာစာတန်းထိုး
 
 2
 00:00:03,600 --> 00:00:06,800
-Next subtitle here.
+နောက်စာကြောင်း
 `;
 
-    console.log('Generating SRT with Gemini 3.8 Flash...');
+      let response;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: prompt
-            },
-            {
-              fileData: {
-                fileUri: uploadedFile.uri,
-                mimeType: uploadedFile.mimeType || file.mimetype
-              }
-            }
-          ]
-        }
-      ]
-    });
+      /*
+       * PRIMARY MODEL
+       * Gemini 3.8 Flash
+       */
+      try {
 
-    const srt = cleanSrt(response.text);
+        response = await generateWithRetry(
+          ai,
+          uploadedFile,
+          prompt,
+          'gemini-3.8-flash',
+          3
+        );
 
-    if (!srt) {
-      throw new Error(
-        'Gemini returned an empty response.'
+      } catch (primaryError) {
+
+        console.error(
+          'Primary model failed:',
+          primaryError?.message || primaryError
+        );
+
+        /*
+         * FALLBACK MODEL
+         * Gemini 3.7 Flash
+         */
+        console.log(
+          'Switching to fallback model: gemini-3.7-flash'
+        );
+
+        response = await generateWithRetry(
+          ai,
+          uploadedFile,
+          prompt,
+          'gemini-3.7-flash',
+          2
+        );
+      }
+
+      const srt = cleanSrt(response.text);
+
+      if (!srt) {
+        throw new Error(
+          'Gemini returned an empty response.'
+        );
+      }
+
+      const hasTimestamp =
+        /\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/
+          .test(srt);
+
+      if (!hasTimestamp) {
+
+        console.error(
+          'Invalid SRT returned by Gemini:',
+          srt
+        );
+
+        return res.status(502).json({
+          error:
+            'AI did not return valid SRT timestamps. Please try again.'
+        });
+      }
+
+      console.log(
+        'SRT generated successfully.'
       );
-    }
 
-    /*
-      Basic SRT validation
-    */
-    const hasTimestamp =
-      /\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/.test(
+      return res.json({
+        success: true,
         srt
+      });
+
+    } catch (err) {
+
+      console.error(
+        'FINAL SRT ERROR:',
+        err
       );
 
-    if (!hasTimestamp) {
-      console.error('Invalid SRT returned by Gemini:', srt);
+      const message =
+        String(err?.message || err);
 
-      return res.status(502).json({
-        error:
-          'AI did not return valid SRT timestamps. Please try again.'
-      });
-    }
+      const lower =
+        message.toLowerCase();
 
-    console.log('SRT generated successfully.');
+      if (
+        lower.includes('503') ||
+        lower.includes('unavailable') ||
+        lower.includes('high demand')
+      ) {
+        return res.status(503).json({
+          error:
+            'Gemini is currently busy. The system already retried and switched models. Please try again shortly.'
+        });
+      }
 
-    res.json({
-      success: true,
-      srt
-    });
+      if (
+        lower.includes('429') ||
+        lower.includes('resource_exhausted')
+      ) {
+        return res.status(429).json({
+          error:
+            'Gemini API limit has been reached. Please wait and try again later.'
+        });
+      }
 
-  } catch (err) {
-    console.error('SRT ERROR:', err);
+      if (
+        lower.includes('401') ||
+        lower.includes('403') ||
+        lower.includes('api key')
+      ) {
+        return res.status(500).json({
+          error:
+            'Gemini API authentication failed. Please check the server API key.'
+        });
+      }
 
-    const message = String(err?.message || err);
-
-    if (
-      message.includes('503') ||
-      message.includes('UNAVAILABLE') ||
-      message.includes('high demand')
-    ) {
-      return res.status(503).json({
-        error:
-          'Gemini is temporarily busy. Please wait a little and try Generate SRT again.'
-      });
-    }
-
-    if (
-      message.includes('429') ||
-      message.includes('RESOURCE_EXHAUSTED')
-    ) {
-      return res.status(429).json({
-        error:
-          'Gemini API limit has been reached. Please wait and try again later.'
-      });
-    }
-
-    if (
-      message.includes('401') ||
-      message.includes('403') ||
-      message.toLowerCase().includes('api key')
-    ) {
       return res.status(500).json({
         error:
-          'Gemini API authentication failed. Please check the server API key.'
+          message ||
+          'Failed to generate subtitles.'
+      });
+
+    } finally {
+
+      if (file?.path) {
+        fs.promises
+          .unlink(file.path)
+          .catch(() => {});
+      }
+    }
+  }
+);
+
+app.use(
+  (err, _req, res, _next) => {
+
+    console.error(
+      'UPLOAD ERROR:',
+      err
+    );
+
+    if (
+      err?.code === 'LIMIT_FILE_SIZE'
+    ) {
+      return res.status(413).json({
+        error:
+          'File is too large. Maximum size is 100MB.'
       });
     }
 
-    return res.status(500).json({
+    return res.status(400).json({
       error:
-        message || 'Failed to generate subtitles.'
-    });
-
-  } finally {
-    /*
-      Delete temporary uploaded file from Render server.
-    */
-    if (file?.path) {
-      fs.promises.unlink(file.path).catch(() => {});
-    }
-  }
-});
-
-/* Upload / Multer errors */
-app.use((err, _req, res, _next) => {
-  console.error('UPLOAD ERROR:', err);
-
-  if (err?.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({
-      error: 'File is too large. Maximum size is 100MB.'
+        err?.message ||
+        'Upload failed.'
     });
   }
+);
 
-  return res.status(400).json({
-    error: err?.message || 'Upload failed.'
-  });
-});
-
-/* Start server */
 app.listen(PORT, () => {
+
   console.log(
     `Video to SRT running on port ${PORT}`
   );
+
 });
