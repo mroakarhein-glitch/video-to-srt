@@ -1,3 +1,4 @@
+```json
 {
   "name": "video-to-srt",
   "version": "1.0.0",
@@ -9,6 +10,8 @@
     "@google/genai": "^1.0.0",
     "dotenv": "^16.4.5",
     "express": "^5.1.0",
+    "ffmpeg-static": "^5.2.0",
     "multer": "^2.0.2"
   }
 }
+```
