@@ -45,7 +45,7 @@ app.post('/api/generate-srt', upload.single('media'), async (req, res) => {
     const base64 = buffer.toString('base64');
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.8-flash' });
 
     const prompt = `You are a professional subtitle generator.\n\nTask:\n1. Transcribe the spoken audio from the attached media.\n2. Source language: ${sourceLanguage}. If Auto detect, detect it yourself.\n3. Translate the subtitle text into ${targetLanguage}. If source and target are the same, keep natural transcription without unnecessary translation.\n4. Return ONLY valid SRT text. No markdown, no notes.\n5. Use sequential numeric indexes.\n6. Use timestamps exactly in SRT format HH:MM:SS,mmm --> HH:MM:SS,mmm.\n7. Keep subtitle chunks natural and readable, normally 1-2 short lines per cue.\n8. Do not invent speech that is not audible.\n9. Preserve names and important English terms when appropriate.\n10. For Myanmar output, use natural Unicode Myanmar language, not Zawgyi.`;
 
