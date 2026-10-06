@@ -5,20 +5,20 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
-import { execFile } from "child_process";
 import { promisify } from "util";
+import { execFile } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import ffmpegPath from "ffmpeg-static";
 
 dotenv.config();
-
-const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+const execFileAsync = promisify(execFile);
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -28,52 +28,47 @@ if (!GEMINI_API_KEY) {
 }
 
 const ai = new GoogleGenAI({
-  apiKey: GEMINI_API_KEY,
+  apiKey: GEMINI_API_KEY
 });
 
-// ----------------------------------------------------
-// MODELS
-// ----------------------------------------------------
+
+/* =========================================================
+   CONFIG
+========================================================= */
 
 const TRANSCRIBE_MODEL = "gemini-3.5-transcribe";
 
 const TRANSLATION_MODELS = [
   "gemini-3.5-flash-lite",
-  "gemini-3.5-flash",
+  "gemini-3.5-flash"
 ];
 
-// ----------------------------------------------------
-// UPLOAD
-// ----------------------------------------------------
-
-const uploadDir = path.join(os.tmpdir(), "video-to-srt");
+const MAX_FILE_SIZE = 500 * 1024 * 1024;
 
 const upload = multer({
-  dest: uploadDir,
-
+  dest: os.tmpdir(),
   limits: {
-    fileSize: 500 * 1024 * 1024,
+    fileSize: MAX_FILE_SIZE
   },
+  fileFilter: (req, file, cb) => {
 
-  fileFilter: (_req, file, cb) => {
     const allowed = [
       "video/mp4",
       "video/quicktime",
       "video/webm",
-
       "audio/mpeg",
-      "audio/mp3",
       "audio/mp4",
-      "audio/x-m4a",
-      "audio/m4a",
       "audio/wav",
-      "audio/x-wav",
       "audio/webm",
       "audio/ogg",
       "audio/flac",
+      "audio/x-m4a"
     ];
 
-    if (allowed.includes(file.mimetype)) {
+    if (
+      allowed.includes(file.mimetype) ||
+      file.originalname.toLowerCase().endsWith(".m4a")
+    ) {
       cb(null, true);
     } else {
       cb(
@@ -82,196 +77,670 @@ const upload = multer({
         )
       );
     }
-  },
+  }
 });
 
-// ----------------------------------------------------
-// EXPRESS
-// ----------------------------------------------------
+
+/* =========================================================
+   EXPRESS
+========================================================= */
 
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Your repo keeps index.html/app.js/style.css in root.
 app.use(express.static(__dirname));
 
-// ----------------------------------------------------
-// HEALTH
-// ----------------------------------------------------
 
-app.get("/", (_req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "AI Subtitle Maker",
-    status: "healthy",
-    transcriptionModel: TRANSCRIBE_MODEL,
-  });
-});
-
-// ----------------------------------------------------
-// HELPERS
-// ----------------------------------------------------
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function safeDelete(filePath) {
-  if (!filePath) return;
 
-  try {
-    await fs.promises.unlink(filePath);
-  } catch {
-    // Ignore cleanup errors.
+function normalizeLanguage(language) {
+
+  if (!language) return null;
+
+  const value = String(language).trim().toLowerCase();
+
+  const map = {
+    "auto detect": null,
+    "auto": null,
+
+    "chinese": "zh",
+    "english": "en",
+    "thai": "th",
+    "myanmar (burmese)": "my",
+    "myanmar": "my",
+    "burmese": "my",
+    "japanese": "ja",
+    "korean": "ko"
+  };
+
+  return Object.prototype.hasOwnProperty.call(map, value)
+    ? map[value]
+    : null;
+}
+
+
+function getLanguageName(language) {
+
+  if (!language) {
+    return "the requested language";
   }
+
+  const value = String(language).trim();
+
+  if (value === "Myanmar (Burmese)") return "Myanmar Unicode";
+  if (value === "Chinese") return "Chinese";
+  if (value === "English") return "English";
+  if (value === "Thai") return "Thai";
+  if (value === "Japanese") return "Japanese";
+  if (value === "Korean") return "Korean";
+
+  return value;
 }
 
-function cleanText(text) {
+
+function cleanJsonText(text) {
+
   if (!text) return "";
 
-  return String(text)
-    .replace(/\r/g, " ")
-    .replace(/\n+/g, " ")
-    .replace(/\s+/g, " ")
+  let value = String(text).trim();
+
+  if (value.startsWith("```")) {
+    value = value
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+  }
+
+  return value;
+}
+
+
+/* =========================================================
+   EXTRACT GEMINI TEXT
+========================================================= */
+
+function extractInteractionText(interaction) {
+
+  const parts = [];
+
+  if (!interaction) {
+    return "";
+  }
+
+  if (typeof interaction.output_text === "string") {
+    parts.push(interaction.output_text);
+  }
+
+  if (typeof interaction.text === "string") {
+    parts.push(interaction.text);
+  }
+
+  if (Array.isArray(interaction.outputs)) {
+
+    for (const output of interaction.outputs) {
+
+      if (typeof output === "string") {
+        parts.push(output);
+        continue;
+      }
+
+      if (typeof output?.text === "string") {
+        parts.push(output.text);
+      }
+
+      if (Array.isArray(output?.content)) {
+
+        for (const content of output.content) {
+
+          if (typeof content === "string") {
+            parts.push(content);
+          }
+
+          if (typeof content?.text === "string") {
+            parts.push(content.text);
+          }
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(interaction.steps)) {
+
+    for (const step of interaction.steps) {
+
+      if (!Array.isArray(step?.content)) continue;
+
+      for (const content of step.content) {
+
+        if (typeof content === "string") {
+          parts.push(content);
+        }
+
+        if (typeof content?.text === "string") {
+          parts.push(content.text);
+        }
+      }
+    }
+  }
+
+  return parts
+    .filter(Boolean)
+    .join("\n")
     .trim();
 }
 
-function getLanguageCode(language) {
-  if (!language) return [];
 
-  const value = String(language).toLowerCase();
+/* =========================================================
+   WORD TIMESTAMP EXTRACTION
+========================================================= */
 
-  if (
-    value.includes("auto") ||
-    value.includes("detect")
-  ) {
+function extractWordAnnotations(interaction) {
+
+  const words = [];
+
+  if (!interaction) {
+    return words;
+  }
+
+  const steps = Array.isArray(interaction.steps)
+    ? interaction.steps
+    : [];
+
+  for (const step of steps) {
+
+    const contents = Array.isArray(step?.content)
+      ? step.content
+      : [];
+
+    for (const content of contents) {
+
+      const annotations = Array.isArray(content?.annotations)
+        ? content.annotations
+        : [];
+
+      for (const annotation of annotations) {
+
+        if (annotation?.type !== "word_info") {
+          continue;
+        }
+
+        const text =
+          annotation.text ??
+          annotation.word ??
+          "";
+
+        const start =
+          annotation.start_offset ??
+          annotation.startOffset ??
+          null;
+
+        const end =
+          annotation.end_offset ??
+          annotation.endOffset ??
+          null;
+
+        if (
+          text &&
+          start !== null &&
+          end !== null
+        ) {
+
+          words.push({
+            text: String(text),
+            start: Number(start),
+            end: Number(end),
+            speaker: annotation.speaker ?? null
+          });
+        }
+      }
+    }
+  }
+
+  words.sort((a, b) => a.start - b.start);
+
+  return words;
+}
+
+
+/* =========================================================
+   TIME CONVERSION
+========================================================= */
+
+function offsetToSeconds(value) {
+
+  if (value === null || value === undefined) {
+    return 0;
+  }
+
+  if (typeof value === "number") {
+
+    // Gemini timestamp offsets are normally microseconds.
+    // Small values are treated as seconds.
+    if (value > 100000) {
+      return value / 1000000;
+    }
+
+    return value;
+  }
+
+  const text = String(value);
+
+  if (text.endsWith("s")) {
+    return parseFloat(text);
+  }
+
+  if (text.endsWith("ms")) {
+    return parseFloat(text) / 1000;
+  }
+
+  if (text.endsWith("us")) {
+    return parseFloat(text) / 1000000;
+  }
+
+  const number = Number(text);
+
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+
+  if (number > 100000) {
+    return number / 1000000;
+  }
+
+  return number;
+}
+
+
+/* =========================================================
+   SOURCE CUE BUILDING
+========================================================= */
+
+function buildSourceCues(words) {
+
+  if (!words.length) {
     return [];
   }
 
-  if (
-    value.includes("chinese") ||
-    value.includes("中文")
-  ) {
-    return ["cmn-Hans-CN"];
+  const cues = [];
+
+  let current = null;
+
+  for (const word of words) {
+
+    const wordText = word.text.trim();
+
+    if (!wordText) {
+      continue;
+    }
+
+    if (!current) {
+
+      current = {
+        start: offsetToSeconds(word.start),
+        end: offsetToSeconds(word.end),
+        words: []
+      };
+    }
+
+    const currentText = current.words.join(" ");
+
+    const proposedText =
+      currentText
+        ? `${currentText} ${wordText}`
+        : wordText;
+
+    const duration =
+      offsetToSeconds(word.end) - current.start;
+
+    const shouldBreak =
+      current.words.length >= 16 ||
+      proposedText.length >= 48 ||
+      duration >= 4.5 ||
+      /[.!?。！？]$/.test(wordText);
+
+    if (shouldBreak && current.words.length > 0) {
+
+      cues.push({
+        start: current.start,
+        end: Math.max(
+          current.end,
+          current.start + 0.5
+        ),
+        text: current.words.join(" ")
+      });
+
+      current = {
+        start: offsetToSeconds(word.start),
+        end: offsetToSeconds(word.end),
+        words: [wordText]
+      };
+
+    } else {
+
+      current.words.push(wordText);
+      current.end = offsetToSeconds(word.end);
+    }
   }
 
-  if (
-    value.includes("english") ||
-    value.includes("အင်္ဂလိပ်")
-  ) {
-    return ["en-US"];
+
+  if (current && current.words.length) {
+
+    cues.push({
+      start: current.start,
+      end: Math.max(
+        current.end,
+        current.start + 0.5
+      ),
+      text: current.words.join(" ")
+    });
   }
 
-  if (
-    value.includes("thai") ||
-    value.includes("ไทย")
-  ) {
-    return ["th-TH"];
-  }
 
-  if (
-    value.includes("myanmar") ||
-    value.includes("burmese") ||
-    value.includes("မြန်မာ")
-  ) {
-    return ["my-MM"];
-  }
-
-  if (
-    value.includes("japanese") ||
-    value.includes("日本")
-  ) {
-    return ["ja-JP"];
-  }
-
-  if (
-    value.includes("korean") ||
-    value.includes("한국")
-  ) {
-    return ["ko-KR"];
-  }
-
-  return [];
+  return cues;
 }
 
-function getTargetLanguageName(language) {
-  if (!language) return "Myanmar Unicode";
 
-  const value = String(language).toLowerCase();
+/* =========================================================
+   TRANSLATION
+========================================================= */
 
-  if (
-    value.includes("myanmar") ||
-    value.includes("burmese") ||
-    value.includes("မြန်မာ")
-  ) {
-    return "Myanmar Unicode (Burmese)";
+async function translateBatch(
+  cues,
+  targetLanguage
+) {
+
+  if (!cues.length) {
+    return [];
   }
 
-  if (
-    value.includes("english") ||
-    value.includes("အင်္ဂလိပ်")
-  ) {
-    return "English";
+  const languageName =
+    getLanguageName(targetLanguage);
+
+  const input = cues.map((cue, index) => ({
+    id: index + 1,
+    text: cue.text
+  }));
+
+
+  const prompt = `
+You are a professional subtitle translator.
+
+Translate the following subtitle segments into ${languageName}.
+
+Rules:
+
+1. Preserve the exact number of subtitle segments.
+2. Keep every segment ID unchanged.
+3. Translate naturally for subtitles.
+4. Do not explain anything.
+5. Do not add comments.
+6. Do not merge segments.
+7. Do not omit segments.
+8. For Myanmar, use natural Myanmar Unicode.
+9. Preserve names, numbers and important terminology accurately.
+10. Return ONLY valid JSON.
+
+Input:
+${JSON.stringify(input)}
+`;
+
+
+  let lastError = null;
+
+
+  for (const model of TRANSLATION_MODELS) {
+
+    try {
+
+      const response =
+        await ai.models.generateContent({
+
+          model,
+
+          contents: prompt,
+
+          config: {
+            responseMimeType: "application/json",
+
+            responseSchema: {
+              type: "array",
+
+              items: {
+                type: "object",
+
+                properties: {
+                  id: {
+                    type: "integer"
+                  },
+
+                  text: {
+                    type: "string"
+                  }
+                },
+
+                required: [
+                  "id",
+                  "text"
+                ]
+              }
+            }
+          }
+        });
+
+
+      const raw =
+        cleanJsonText(
+          response.text || ""
+        );
+
+
+      const parsed =
+        JSON.parse(raw);
+
+
+      if (!Array.isArray(parsed)) {
+        throw new Error(
+          "Translation response was not an array."
+        );
+      }
+
+
+      return parsed
+        .sort((a, b) => a.id - b.id)
+        .map(item => String(item.text || "").trim());
+
+
+    } catch (error) {
+
+      lastError = error;
+
+      console.error(
+        `Translation model ${model} failed:`,
+        error?.message || error
+      );
+    }
   }
 
-  if (
-    value.includes("chinese") ||
-    value.includes("中文")
-  ) {
-    return "Simplified Chinese";
-  }
 
-  if (
-    value.includes("thai") ||
-    value.includes("ไทย")
-  ) {
-    return "Thai";
-  }
-
-  if (
-    value.includes("japanese") ||
-    value.includes("日本")
-  ) {
-    return "Japanese";
-  }
-
-  if (
-    value.includes("korean") ||
-    value.includes("한국")
-  ) {
-    return "Korean";
-  }
-
-  return language;
+  throw lastError ||
+    new Error("Translation failed.");
 }
 
-function isVideoMime(mimeType) {
-  return String(mimeType || "").startsWith("video/");
+
+/* =========================================================
+   SRT HELPERS
+========================================================= */
+
+function formatSrtTime(seconds) {
+
+  seconds = Math.max(
+    0,
+    Number(seconds) || 0
+  );
+
+  const hours =
+    Math.floor(seconds / 3600);
+
+  const minutes =
+    Math.floor((seconds % 3600) / 60);
+
+  const secs =
+    Math.floor(seconds % 60);
+
+  const millis =
+    Math.floor(
+      (seconds % 1) * 1000
+    );
+
+
+  return [
+    String(hours).padStart(2, "0"),
+    String(minutes).padStart(2, "0"),
+    String(secs).padStart(2, "0")
+  ].join(":")
+    + ","
+    + String(millis).padStart(3, "0");
 }
 
-// ----------------------------------------------------
-// FFMPEG
-// ----------------------------------------------------
 
-async function extractAudioFromVideo(inputPath) {
-  if (!ffmpegPath) {
-    throw new Error(
-      "FFmpeg is not available on this server."
+function wrapSubtitle(text, maxChars = 42) {
+
+  const words =
+    String(text || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+
+  if (!words.length) {
+    return "";
+  }
+
+
+  const lines = [];
+  let line = "";
+
+
+  for (const word of words) {
+
+    const proposed =
+      line
+        ? `${line} ${word}`
+        : word;
+
+
+    if (
+      line &&
+      proposed.length > maxChars
+    ) {
+
+      lines.push(line);
+      line = word;
+
+    } else {
+
+      line = proposed;
+    }
+  }
+
+
+  if (line) {
+    lines.push(line);
+  }
+
+
+  if (lines.length <= 2) {
+    return lines.join("\n");
+  }
+
+
+  return [
+    lines[0],
+    lines.slice(1).join(" ")
+  ].join("\n");
+}
+
+
+function buildSrt(cues, translatedTexts) {
+
+  const blocks = [];
+
+
+  for (
+    let i = 0;
+    i < cues.length;
+    i++
+  ) {
+
+    const cue = cues[i];
+
+    const translated =
+      translatedTexts[i] ||
+      cue.text;
+
+
+    let start = cue.start;
+    let end = cue.end;
+
+
+    if (end <= start) {
+      end = start + 1;
+    }
+
+
+    // Avoid overlapping subtitle timing.
+    if (i < cues.length - 1) {
+
+      const nextStart =
+        Number(cues[i + 1].start);
+
+      if (
+        Number.isFinite(nextStart) &&
+        end > nextStart
+      ) {
+        end = Math.max(
+          start + 0.5,
+          nextStart - 0.02
+        );
+      }
+    }
+
+
+    blocks.push(
+      `${i + 1}\n` +
+      `${formatSrtTime(start)} --> ${formatSrtTime(end)}\n` +
+      `${wrapSubtitle(translated)}`
     );
   }
 
-  const outputPath = path.join(
-    os.tmpdir(),
-    `subtitle-audio-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2)}.mp3`
-  );
 
-  console.log("Extracting audio from video...");
+  return blocks.join("\n\n") + "\n";
+}
+
+
+/* =========================================================
+   AUDIO EXTRACTION
+========================================================= */
+
+async function extractAudio(
+  inputPath,
+  outputPath
+) {
+
+  if (!ffmpegPath) {
+    throw new Error(
+      "FFmpeg binary was not found."
+    );
+  }
+
 
   await execFileAsync(
     ffmpegPath,
@@ -282,1186 +751,541 @@ async function extractAudioFromVideo(inputPath) {
 
       "-vn",
 
-      "-acodec",
-      "libmp3lame",
+      "-ac",
+      "1",
 
       "-ar",
       "16000",
 
-      "-ac",
-      "1",
-
       "-b:a",
       "64k",
 
-      outputPath,
+      outputPath
     ],
     {
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer: 10 * 1024 * 1024
     }
   );
-
-  console.log(
-    "Audio extraction complete:",
-    outputPath
-  );
-
-  return outputPath;
 }
 
-// ----------------------------------------------------
-// GEMINI FILE UPLOAD
-// ----------------------------------------------------
 
-async function uploadToGemini(
-  filePath,
-  mimeType
-) {
-  console.log(
-    "Uploading audio to Gemini Files API..."
-  );
+/* =========================================================
+   WAIT FOR GEMINI FILE
+========================================================= */
 
-  const uploaded = await ai.files.upload({
-    file: filePath,
-
-    config: {
-      mimeType,
-    },
-  });
-
-  if (!uploaded) {
-    throw new Error(
-      "Gemini Files API returned no file."
-    );
-  }
-
-  console.log(
-    "Gemini file:",
-    uploaded.name || uploaded.uri || "unknown"
-  );
-
-  return uploaded;
-}
-
-// ----------------------------------------------------
-// WAIT FOR FILE
-// ----------------------------------------------------
-
-async function waitForGeminiFile(
+async function waitForFileActive(
   fileName
 ) {
-  const maxAttempts = 60;
 
-  for (
-    let attempt = 1;
-    attempt <= maxAttempts;
-    attempt++
-  ) {
-    const file = await ai.files.get({
-      name: fileName,
-    });
+  for (let i = 0; i < 60; i++) {
+
+    const file =
+      await ai.files.get({
+        name: fileName
+      });
+
 
     const state =
       file?.state?.toString?.() ||
       file?.state ||
-      "UNKNOWN";
+      "";
 
-    console.log(
-      `Gemini processing media: ${state}`
-    );
 
     if (
       state === "ACTIVE" ||
-      state === "FileState.ACTIVE"
+      state === "active"
     ) {
       return file;
     }
 
+
     if (
       state === "FAILED" ||
-      state === "FileState.FAILED"
+      state === "failed"
     ) {
+
       throw new Error(
         "Gemini failed while processing the uploaded audio."
       );
     }
 
+
     await sleep(2000);
   }
 
+
   throw new Error(
-    "Gemini media processing timed out."
+    "Timed out while waiting for Gemini to process the audio."
   );
 }
 
-// ----------------------------------------------------
-// TRANSCRIPTION
-// ----------------------------------------------------
+
+/* =========================================================
+   TRANSCRIPTION
+========================================================= */
 
 async function transcribeAudio(
-  geminiFile,
+  audioFile,
   sourceLanguage
 ) {
-  const languageCodes =
-    getLanguageCode(sourceLanguage);
 
-  console.log(
-    "Starting Gemini 3.5 Transcribe..."
-  );
+  const languageCode =
+    normalizeLanguage(sourceLanguage);
 
-  if (languageCodes.length > 0) {
-    console.log(
-      "Source language:",
-      languageCodes.join(", ")
-    );
-  } else {
-    console.log(
-      "Source language: automatic detection"
-    );
-  }
 
-  const transcriptionConfig = {
-    mode: {
-      type: "verbatim",
+  const config = {
+    transcription_config: {
+      mode: {
+        type: "verbatim",
 
-      // IMPORTANT:
-      // This is the current API setting.
-      timestamp_granularities: ["word"],
-    },
+        timestamp_granularities: [
+          "word"
+        ]
+      }
+    }
   };
 
-  if (languageCodes.length > 0) {
-    transcriptionConfig.language_codes =
-      languageCodes;
+
+  if (languageCode) {
+
+    config.transcription_config.language_codes = [
+      languageCode
+    ];
   }
+
 
   const interaction =
     await ai.interactions.create({
+
       model: TRANSCRIBE_MODEL,
 
       input: [
         {
           type: "audio",
-          uri: geminiFile.uri,
+
+          uri: audioFile.uri,
+
           mime_type:
-            geminiFile.mimeType ||
-            "audio/mp3",
-        },
+            audioFile.mimeType ||
+            "audio/mpeg"
+        }
       ],
 
-      generation_config: {
-        transcription_config:
-          transcriptionConfig,
-      },
+      generation_config: config
     });
 
-  if (!interaction) {
-    throw new Error(
-      "Gemini Transcribe returned no response."
-    );
-  }
 
-  const transcript =
-    interaction.output_text || "";
-
-  const words =
-    extractWordAnnotations(interaction);
-
-  console.log(
-    "Transcript characters:",
-    transcript.length
-  );
-
-  console.log(
-    "Word annotations:",
-    words.length
-  );
-
-  if (!words.length) {
-    throw new Error(
-      "Gemini returned transcription text but no word timestamps. Please try again."
-    );
-  }
-
-  return {
-    transcript,
-    words,
-  };
+  return interaction;
 }
 
-// ----------------------------------------------------
-// EXTRACT WORD TIMESTAMPS
-// ----------------------------------------------------
 
-function extractWordAnnotations(
-  interaction
-) {
-  const words = [];
+/* =========================================================
+   MAIN GENERATION
+========================================================= */
 
-  for (
-    const step of interaction?.steps || []
-  ) {
-    for (
-      const content of step?.content || []
-    ) {
-      for (
-        const annotation of
-          content?.annotations || []
-      ) {
-        if (
-          annotation?.type === "word_info"
-        ) {
-          words.push({
-            text: annotation.text || "",
-
-            speaker:
-              annotation.speaker || null,
-
-            start_offset:
-              annotation.start_offset || "0s",
-
-            end_offset:
-              annotation.end_offset || "0s",
-          });
-        }
-      }
-    }
-  }
-
-  return words;
-}
-
-// ----------------------------------------------------
-// TIME HELPERS
-// ----------------------------------------------------
-
-function parseSeconds(value) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  const text = String(value || "0")
-    .trim()
-    .toLowerCase();
-
-  if (text.endsWith("ms")) {
-    return (
-      Number.parseFloat(
-        text.replace("ms", "")
-      ) / 1000
-    );
-  }
-
-  if (text.endsWith("s")) {
-    return Number.parseFloat(
-      text.replace("s", "")
-    );
-  }
-
-  return Number.parseFloat(text) || 0;
-}
-
-function formatSrtTime(seconds) {
-  seconds = Math.max(
-    0,
-    Number(seconds) || 0
-  );
-
-  const hours = Math.floor(
-    seconds / 3600
-  );
-
-  const minutes = Math.floor(
-    (seconds % 3600) / 60
-  );
-
-  const secs = Math.floor(
-    seconds % 60
-  );
-
-  const milliseconds = Math.round(
-    (seconds - Math.floor(seconds)) *
-      1000
-  );
-
-  let ms = milliseconds;
-
-  let finalSecs = secs;
-
-  if (ms >= 1000) {
-    ms = 0;
-    finalSecs += 1;
-  }
-
-  return (
-    String(hours).padStart(2, "0") +
-    ":" +
-    String(minutes).padStart(2, "0") +
-    ":" +
-    String(finalSecs).padStart(2, "0") +
-    "," +
-    String(ms).padStart(3, "0")
-  );
-}
-
-// ----------------------------------------------------
-// WORD JOINING
-// ----------------------------------------------------
-
-function containsCjk(text) {
-  return /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/u.test(
-    text
-  );
-}
-
-function joinWords(words) {
-  if (!words.length) return "";
-
-  const sample = words
-    .map((w) => w.text)
-    .join("");
-
-  // Chinese / Japanese / Korean style text
-  if (containsCjk(sample)) {
-    return words
-      .map((w) => w.text)
-      .join("")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  return words
-    .map((w) => w.text)
-    .join(" ")
-    .replace(/\s+([,.!?;:%])/g, "$1")
-    .replace(/\(\s+/g, "(")
-    .replace(/\s+\)/g, ")")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-// ----------------------------------------------------
-// CREATE SOURCE CUES
-// ----------------------------------------------------
-
-function createSourceCues(
-  words
-) {
-  const cues = [];
-
-  let current = [];
-
-  const MAX_DURATION = 4.5;
-  const MAX_WORDS = 16;
-  const MAX_CHARS = 48;
-
-  function flush() {
-    if (!current.length) return;
-
-    const first = current[0];
-    const last =
-      current[current.length - 1];
-
-    const text = cleanText(
-      joinWords(current)
-    );
-
-    if (text) {
-      cues.push({
-        start: parseSeconds(
-          first.start_offset
-        ),
-
-        end: Math.max(
-          parseSeconds(
-            last.end_offset
-          ),
-          parseSeconds(
-            first.start_offset
-          ) + 0.8
-        ),
-
-        sourceText: text,
-      });
-    }
-
-    current = [];
-  }
-
-  for (const word of words) {
-    if (!word?.text) continue;
-
-    const candidate = [
-      ...current,
-      word,
-    ];
-
-    const first =
-      candidate[0];
-
-    const last =
-      candidate[candidate.length - 1];
-
-    const duration =
-      parseSeconds(
-        last.end_offset
-      ) -
-      parseSeconds(
-        first.start_offset
-      );
-
-    const candidateText =
-      joinWords(candidate);
-
-    const tooLong =
-      duration > MAX_DURATION ||
-      candidate.length > MAX_WORDS ||
-      candidateText.length > MAX_CHARS;
-
-    if (
-      current.length > 0 &&
-      tooLong
-    ) {
-      flush();
-    }
-
-    current.push(word);
-
-    const text =
-      joinWords(current);
-
-    const endWord =
-      String(word.text).trim();
-
-    const punctuationBreak =
-      /[.!?。！？]$/u.test(
-        endWord
-      );
-
-    const currentDuration =
-      parseSeconds(
-        word.end_offset
-      ) -
-      parseSeconds(
-        current[0].start_offset
-      );
-
-    if (
-      punctuationBreak &&
-      currentDuration >= 1.0
-    ) {
-      flush();
-    }
-  }
-
-  flush();
-
-  return cues;
-}
-
-// ----------------------------------------------------
-// TRANSLATION
-// ----------------------------------------------------
-
-async function translateCues(
-  cues,
+async function generateSrt({
+  mediaPath,
+  sourceLanguage,
   targetLanguage
-) {
-  const target =
-    getTargetLanguageName(
-      targetLanguage
+}) {
+
+  const workingDir =
+    await fs.promises.mkdtemp(
+      path.join(
+        os.tmpdir(),
+        "video-to-srt-"
+      )
     );
 
-  if (
-    !cues.length
-  ) {
-    return [];
-  }
 
-  const translated = [];
-
-  // Process in batches so very long videos
-  // don't create one huge translation request.
-  const BATCH_SIZE = 40;
-
-  for (
-    let start = 0;
-    start < cues.length;
-    start += BATCH_SIZE
-  ) {
-    const batch =
-      cues.slice(
-        start,
-        start + BATCH_SIZE
-      );
-
-    console.log(
-      `Translating cues ${start + 1}-${start + batch.length} / ${cues.length}`
+  const audioPath =
+    path.join(
+      workingDir,
+      "audio.mp3"
     );
 
-    const numberedText =
-      batch
-        .map(
-          (cue, index) =>
-            `${index + 1}. ${cue.sourceText}`
-        )
-        .join("\n");
 
-    const prompt = `
-You are a professional subtitle translator.
+  let uploadedFile = null;
 
-Translate the following numbered subtitle lines into ${target}.
 
-IMPORTANT RULES:
-- Return exactly one translated string for every numbered line.
-- Keep the same order.
-- Do NOT merge lines.
-- Do NOT split lines.
-- Do NOT add explanations.
-- Do NOT add numbering inside the translated strings.
-- Preserve names, numbers, brands and important English words when appropriate.
-- If the target is Myanmar, use natural Myanmar Unicode only, never Zawgyi.
-- For Myanmar, translate naturally as a human subtitle translator would.
-- Do not translate things that should remain as names.
-- Do not invent speech.
+  try {
 
-SOURCE SUBTITLE LINES:
+    /*
+     * STEP 1
+     * Prepare audio
+     */
 
-${numberedText}
-`;
+    await extractAudio(
+      mediaPath,
+      audioPath
+    );
 
-    let batchTranslations =
-      await translateBatchWithRetry(
-        prompt,
-        batch.length
-      );
 
-    if (
-      !Array.isArray(
-        batchTranslations
-      ) ||
-      batchTranslations.length !==
-        batch.length
-    ) {
+    /*
+     * STEP 2
+     * Upload audio to Gemini
+     */
+
+    uploadedFile =
+      await ai.files.upload({
+
+        file: audioPath,
+
+        config: {
+          mime_type: "audio/mpeg"
+        }
+      });
+
+
+    if (!uploadedFile?.name) {
+
       throw new Error(
-        `Translation returned ${batchTranslations?.length || 0} lines for ${batch.length} subtitle lines.`
+        "Gemini did not return an uploaded file."
       );
     }
+
+
+    /*
+     * STEP 3
+     * Wait until Gemini file is ready
+     */
+
+    const activeFile =
+      await waitForFileActive(
+        uploadedFile.name
+      );
+
+
+    /*
+     * STEP 4
+     * Transcribe
+     */
+
+    const interaction =
+      await transcribeAudio(
+        activeFile,
+        sourceLanguage
+      );
+
+
+    /*
+     * STEP 5
+     * Extract word timestamps
+     */
+
+    const words =
+      extractWordAnnotations(
+        interaction
+      );
+
+
+    if (!words.length) {
+
+      throw new Error(
+        "Gemini returned no word timestamps. Please try another file."
+      );
+    }
+
+
+    /*
+     * STEP 6
+     * Build source cues
+     */
+
+    const sourceCues =
+      buildSourceCues(words);
+
+
+    if (!sourceCues.length) {
+
+      throw new Error(
+        "No subtitle segments could be created."
+      );
+    }
+
+
+    /*
+     * STEP 7
+     * Translate in batches
+     */
+
+    const BATCH_SIZE = 40;
+
+    const translatedTexts = [];
+
 
     for (
       let i = 0;
-      i < batch.length;
-      i++
+      i < sourceCues.length;
+      i += BATCH_SIZE
     ) {
-      translated.push({
-        ...batch[i],
 
-        text: cleanText(
-          batchTranslations[i]
-        ),
-      });
-    }
-  }
-
-  return translated;
-}
-
-// ----------------------------------------------------
-// TRANSLATION RETRY
-// ----------------------------------------------------
-
-async function translateBatchWithRetry(
-  prompt,
-  expectedCount
-) {
-  let lastError = null;
-
-  for (
-    const model of TRANSLATION_MODELS
-  ) {
-    for (
-      let attempt = 1;
-      attempt <= 2;
-      attempt++
-    ) {
-      try {
-        console.log(
-          `Translation model ${model} - attempt ${attempt}`
+      const batch =
+        sourceCues.slice(
+          i,
+          i + BATCH_SIZE
         );
 
-        const response =
-          await ai.models.generateContent(
-            {
-              model,
 
-              contents: prompt,
-
-              config: {
-                responseMimeType:
-                  "application/json",
-
-                responseSchema: {
-                  type: "array",
-
-                  items: {
-                    type: "string",
-                  },
-                },
-              },
-            }
-          );
-
-        const raw =
-          response?.text || "";
-
-        const parsed =
-          JSON.parse(raw);
-
-        if (
-          Array.isArray(parsed) &&
-          parsed.length ===
-            expectedCount
-        ) {
-          return parsed;
-        }
-
-        throw new Error(
-          `Invalid translation JSON. Expected ${expectedCount} strings.`
-        );
-      } catch (error) {
-        lastError = error;
-
-        console.error(
-          `Translation failed with ${model}:`,
-          error?.message ||
-            error
+      const translated =
+        await translateBatch(
+          batch,
+          targetLanguage
         );
 
-        if (attempt < 2) {
-          await sleep(
-            attempt * 3000
-          );
-        }
-      }
-    }
-  }
 
-  throw (
-    lastError ||
-    new Error(
-      "Translation failed."
-    )
-  );
-}
-
-// ----------------------------------------------------
-// SRT LINE WRAPPING
-// ----------------------------------------------------
-
-function wrapSubtitleText(
-  text,
-  maxLength = 42
-) {
-  text = cleanText(text);
-
-  if (!text) return "";
-
-  if (
-    text.length <= maxLength
-  ) {
-    return text;
-  }
-
-  // Languages with spaces
-  if (/\s/u.test(text)) {
-    const words =
-      text.split(/\s+/);
-
-    const lines = [];
-    let current = "";
-
-    for (const word of words) {
-      const candidate =
-        current
-          ? `${current} ${word}`
-          : word;
-
-      if (
-        candidate.length <=
-        maxLength
-      ) {
-        current = candidate;
-      } else {
-        if (current) {
-          lines.push(current);
-        }
-
-        current = word;
-      }
-    }
-
-    if (current) {
-      lines.push(current);
-    }
-
-    if (lines.length <= 2) {
-      return lines.join("\n");
-    }
-
-    // Keep SRT cue to max 2 lines.
-    return (
-      lines[0] +
-      "\n" +
-      lines.slice(1).join(" ")
-    );
-  }
-
-  // CJK / text without spaces
-  let bestBreak =
-    maxLength;
-
-  if (
-    text.length >
-    maxLength * 2
-  ) {
-    bestBreak =
-      Math.min(
-        maxLength,
-        Math.ceil(
-          text.length / 2
-        )
+      translatedTexts.push(
+        ...translated
       );
-  }
+    }
 
-  return (
-    text.slice(0, bestBreak) +
-    "\n" +
-    text.slice(bestBreak)
-  );
-}
 
-// ----------------------------------------------------
-// BUILD SRT
-// ----------------------------------------------------
+    /*
+     * STEP 8
+     * Build final SRT
+     */
 
-function buildSrt(cues) {
-  return cues
-    .map(
-      (cue, index) => {
-        let start = cue.start;
-        let end = cue.end;
+    const srt =
+      buildSrt(
+        sourceCues,
+        translatedTexts
+      );
 
-        if (
-          end <= start
-        ) {
-          end =
-            start + 1;
+
+    return {
+      srt,
+      cueCount: sourceCues.length,
+      model: TRANSCRIBE_MODEL
+    };
+
+
+  } finally {
+
+    /*
+     * Cleanup
+     */
+
+    try {
+      await fs.promises.rm(
+        workingDir,
+        {
+          recursive: true,
+          force: true
         }
+      );
+    } catch (error) {
+      console.error(
+        "Cleanup error:",
+        error?.message || error
+      );
+    }
 
-        // Prevent overlapping / zero-length cues.
-        if (
-          end - start <
-          0.5
-        ) {
-          end =
-            start + 0.8;
-        }
+    try {
 
-        const text =
-          wrapSubtitleText(
-            cue.text
-          );
+      if (uploadedFile?.name) {
 
-        return [
-          String(index + 1),
-
-          `${formatSrtTime(
-            start
-          )} --> ${formatSrtTime(
-            end
-          )}`,
-
-          text,
-
-          "",
-        ].join("\n");
+        await ai.files.delete({
+          name: uploadedFile.name
+        });
       }
-    )
-    .join("\n");
+
+    } catch (error) {
+
+      console.warn(
+        "Gemini file cleanup warning:",
+        error?.message || error
+      );
+    }
+  }
 }
 
-// ----------------------------------------------------
-// SAME LANGUAGE CHECK
-// ----------------------------------------------------
 
-function languagesAppearSame(
-  sourceLanguage,
-  targetLanguage
-) {
-  const source =
-    String(
-      sourceLanguage || ""
-    ).toLowerCase();
+/* =========================================================
+   ROUTES
+========================================================= */
 
-  const target =
-    String(
-      targetLanguage || ""
-    ).toLowerCase();
+app.get("/health", (req, res) => {
 
-  if (
-    source.includes("auto") ||
-    source.includes("detect")
-  ) {
-    return false;
-  }
+  res.json({
+    ok: true,
+    service: "video-to-srt",
+    transcriptionModel: TRANSCRIBE_MODEL
+  });
+});
 
-  if (
-    source.includes("chinese") &&
-    target.includes("chinese")
-  ) {
-    return true;
-  }
 
-  if (
-    source.includes("english") &&
-    target.includes("english")
-  ) {
-    return true;
-  }
+app.get("/", (req, res) => {
 
-  if (
-    source.includes("thai") &&
-    target.includes("thai")
-  ) {
-    return true;
-  }
-
-  if (
-    (
-      source.includes("myanmar") ||
-      source.includes("burmese") ||
-      source.includes("မြန်မာ")
-    ) &&
-    (
-      target.includes("myanmar") ||
-      target.includes("burmese") ||
-      target.includes("မြန်မာ")
+  res.sendFile(
+    path.join(
+      __dirname,
+      "index.html"
     )
-  ) {
-    return true;
-  }
+  );
+});
 
-  if (
-    source.includes("japanese") &&
-    target.includes("japanese")
-  ) {
-    return true;
-  }
-
-  if (
-    source.includes("korean") &&
-    target.includes("korean")
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-// ----------------------------------------------------
-// MAIN GENERATE SRT API
-// ----------------------------------------------------
 
 app.post(
   "/api/generate-srt",
   upload.single("media"),
-  async (req, res) => {
-    const file = req.file;
 
-    let audioPath = null;
+  async (req, res) => {
+
+    let mediaPath = null;
+
 
     try {
-      if (!GEMINI_API_KEY) {
-        return res.status(500).json({
-          error:
-            "Server is missing GEMINI_API_KEY.",
-        });
-      }
 
-      if (!file) {
+      if (!req.file) {
+
         return res.status(400).json({
           error:
-            "Please upload a supported video or audio file.",
+            "Please upload a video or audio file."
         });
       }
 
-      const sourceLanguage = (
+
+      mediaPath =
+        req.file.path;
+
+
+      const sourceLanguage =
         req.body.sourceLanguage ||
-        "Auto detect"
-      ).slice(0, 60);
+        "Auto detect";
 
-      const targetLanguage = (
+
+      const targetLanguage =
         req.body.targetLanguage ||
-        "Myanmar (Burmese)"
-      ).slice(0, 60);
+        "Myanmar (Burmese)";
+
 
       console.log(
-        "----------------------------------------"
-      );
-
-      console.log(
-        "Uploaded file:",
-        file.originalname
-      );
-
-      console.log(
-        "File size:",
-        file.size
-      );
-
-      console.log(
-        "MIME:",
-        file.mimetype
-      );
-
-      console.log(
-        "Source:",
-        sourceLanguage
-      );
-
-      console.log(
-        "Target:",
-        targetLanguage
-      );
-
-      // ------------------------------------------------
-      // 1. VIDEO -> AUDIO
-      // ------------------------------------------------
-
-      if (
-        isVideoMime(
-          file.mimetype
-        )
-      ) {
-        audioPath =
-          await extractAudioFromVideo(
-            file.path
-          );
-      } else {
-        audioPath = file.path;
-      }
-
-      // ------------------------------------------------
-      // 2. UPLOAD AUDIO TO GEMINI
-      // ------------------------------------------------
-
-      const geminiFile =
-        await uploadToGemini(
-          audioPath,
-          "audio/mp3"
-        );
-
-      // ------------------------------------------------
-      // 3. WAIT UNTIL ACTIVE
-      // ------------------------------------------------
-
-      const activeFile =
-        await waitForGeminiFile(
-          geminiFile.name
-        );
-
-      // ------------------------------------------------
-      // 4. TRANSCRIBE + WORD TIMESTAMPS
-      // ------------------------------------------------
-
-      const transcription =
-        await transcribeAudio(
-          activeFile,
-          sourceLanguage
-        );
-
-      // ------------------------------------------------
-      // 5. CREATE TIMESTAMPED SOURCE CUES
-      // ------------------------------------------------
-
-      const sourceCues =
-        createSourceCues(
-          transcription.words
-        );
-
-      if (
-        !sourceCues.length
-      ) {
-        throw new Error(
-          "No subtitle segments could be created from the transcription."
-        );
-      }
-
-      console.log(
-        "Created source cues:",
-        sourceCues.length
-      );
-
-      // ------------------------------------------------
-      // 6. TRANSLATE
-      // ------------------------------------------------
-
-      let finalCues;
-
-      if (
-        languagesAppearSame(
+        "Starting SRT generation:",
+        {
+          file: req.file.originalname,
+          size: req.file.size,
           sourceLanguage,
           targetLanguage
-        )
-      ) {
-        finalCues =
-          sourceCues.map(
-            (cue) => ({
-              ...cue,
-              text: cue.sourceText,
-            })
-          );
-      } else {
-        finalCues =
-          await translateCues(
-            sourceCues,
-            targetLanguage
-          );
-      }
-
-      // ------------------------------------------------
-      // 7. BUILD SRT
-      // ------------------------------------------------
-
-      const srt =
-        buildSrt(finalCues);
-
-      if (
-        !srt ||
-        !/\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}/.test(
-          srt
-        )
-      ) {
-        throw new Error(
-          "Generated subtitle data is not valid SRT."
-        );
-      }
-
-      console.log(
-        "SRT generated successfully."
+        }
       );
 
+
+      const result =
+        await generateSrt({
+
+          mediaPath,
+
+          sourceLanguage,
+
+          targetLanguage
+        });
+
+
       console.log(
-        "SRT characters:",
-        srt.length
+        "SRT generation completed:",
+        result.cueCount,
+        "cues"
       );
+
 
       return res.json({
-        srt,
-        model: TRANSCRIBE_MODEL,
-        cueCount: finalCues.length,
+
+        ok: true,
+
+        srt: result.srt,
+
+        model: result.model,
+
+        cueCount: result.cueCount
       });
+
+
     } catch (error) {
+
       console.error(
-        "FINAL SRT ERROR:",
+        "Generation error:",
         error
       );
 
-      const message =
+
+      let message =
         error?.message ||
-        "Failed to generate subtitles.";
+        "SRT generation failed.";
+
 
       if (
-        /503|UNAVAILABLE|high demand|overloaded/i.test(
-          message
-        )
+        error?.code === "LIMIT_FILE_SIZE"
       ) {
-        return res.status(503).json({
-          error:
-            "Gemini is currently busy. Please try again shortly.",
-        });
+
+        message =
+          "File is too large. Maximum allowed size is 500MB.";
       }
 
-      if (
-        /429|quota|rate limit/i.test(
-          message
-        )
-      ) {
-        return res.status(429).json({
-          error:
-            "Gemini API limit was reached. Please try again later.",
-        });
-      }
 
       return res.status(500).json({
-        error: message,
+        ok: false,
+        error: message
       });
-    } finally {
-      // Delete uploaded temporary file.
-      if (
-        file?.path
-      ) {
-        await safeDelete(
-          file.path
-        );
-      }
 
-      // Delete extracted MP3 if it is separate.
-      if (
-        audioPath &&
-        audioPath !== file?.path
-      ) {
-        await safeDelete(
-          audioPath
-        );
+
+    } finally {
+
+      if (mediaPath) {
+
+        try {
+
+          await fs.promises.unlink(
+            mediaPath
+          );
+
+        } catch {
+          // File may already have been removed.
+        }
       }
     }
   }
 );
 
-// ----------------------------------------------------
-// MULTER / SERVER ERRORS
-// ----------------------------------------------------
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
 
 app.use(
-  (
-    err,
-    _req,
-    res,
-    _next
-  ) => {
+  (error, req, res, next) => {
+
     console.error(
-      "Express error:",
-      err
+      "Unhandled server error:",
+      error
     );
 
-    if (
-      err?.code ===
-      "LIMIT_FILE_SIZE"
-    ) {
-      return res.status(413).json({
-        error:
-          "File is too large. Maximum size is 500MB.",
-      });
+
+    if (res.headersSent) {
+      return next(error);
     }
 
-    return res.status(400).json({
+
+    res.status(500).json({
+      ok: false,
       error:
-        err?.message ||
-        "Upload failed.",
+        error?.message ||
+        "Internal server error."
     });
   }
 );
 
-// ----------------------------------------------------
-// START
-// ----------------------------------------------------
+
+/* =========================================================
+   START
+========================================================= */
 
 app.listen(
   PORT,
+  "0.0.0.0",
   () => {
+
     console.log(
-      `AI Subtitle Maker running on port ${PORT}`
+      `Video-to-SRT server running on port ${PORT}`
     );
 
     console.log(
