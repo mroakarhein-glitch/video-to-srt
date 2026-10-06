@@ -1,3 +1,4 @@
+```html
 <!doctype html>
 <html lang="en">
 <head>
@@ -7,25 +8,53 @@
   <title>Video → SRT</title>
   <link rel="stylesheet" href="style.css" />
 </head>
+
 <body>
   <main class="shell">
+
     <section class="hero">
       <div class="pill">AI SUBTITLE MAKER</div>
-      <h1>Video ကို Upload တင်ပြီး<br><span>SRT ထုတ်ပါ</span></h1>
-      <p>Video / Audio ဖိုင်တင်ပါ။ AI က စာသားဖော်ထုတ်ပြီး သင်ရွေးထားတဲ့ဘာသာစကားနဲ့ SRT ဖိုင်ထုတ်ပေးပါမယ်။</p>
+
+      <h1>
+        Video ကို Upload တင်ပြီး<br>
+        <span>SRT ထုတ်ပါ</span>
+      </h1>
+
+      <p>
+        Video / Audio ဖိုင်တင်ပါ။ AI က စာသားဖော်ထုတ်ပြီး
+        သင်ရွေးထားတဲ့ဘာသာစကားနဲ့ SRT ဖိုင်ထုတ်ပေးပါမယ်။
+      </p>
     </section>
 
     <section class="card">
+
       <form id="form">
+
         <label class="drop" id="dropZone">
-          <input id="media" name="media" type="file" accept="video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav,audio/webm,.m4a" required />
+          <input
+            id="media"
+            name="media"
+            type="file"
+            accept="video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav,audio/webm,.m4a"
+            required
+          />
+
           <div class="upload-icon">↑</div>
-          <strong id="fileTitle">Video / Audio Upload</strong>
-          <small id="fileHint">MP4, MOV, WEBM, MP3, M4A, WAV • Max 100MB</small>
+
+          <strong id="fileTitle">
+            Video / Audio Upload
+          </strong>
+
+          <small id="fileHint">
+            MP4, MOV, WEBM, MP3, M4A, WAV • Max 100MB
+          </small>
         </label>
 
         <div class="grid">
-          <label>Source language
+
+          <label>
+            Source language
+
             <select id="sourceLanguage" name="sourceLanguage">
               <option>Auto detect</option>
               <option>Chinese</option>
@@ -37,7 +66,9 @@
             </select>
           </label>
 
-          <label>SRT language
+          <label>
+            SRT language
+
             <select id="targetLanguage" name="targetLanguage">
               <option selected>Myanmar (Burmese)</option>
               <option>English</option>
@@ -47,28 +78,92 @@
               <option>Korean</option>
             </select>
           </label>
+
         </div>
 
-        <button id="generateBtn" type="submit">Generate SRT</button>
+        <button id="generateBtn" type="submit">
+          Generate SRT
+        </button>
+
       </form>
 
+      <!-- STATUS -->
       <div id="status" class="status hidden"></div>
 
+      <!-- REAL PROGRESS -->
+      <section id="progressBox" class="progress-box hidden">
+
+        <div class="progress-top">
+          <strong id="progressTitle">
+            Preparing...
+          </strong>
+
+          <strong id="progressPercent">
+            0%
+          </strong>
+        </div>
+
+        <div class="progress-track">
+          <div
+            id="progressBar"
+            class="progress-bar"
+            style="width: 0%"
+          ></div>
+        </div>
+
+        <small id="progressMessage">
+          Starting subtitle generation...
+        </small>
+
+      </section>
+
+      <!-- RESULT -->
       <section id="result" class="result hidden">
+
         <div class="result-head">
+
           <div>
             <small>RESULT</small>
-            <h2>Your SRT is ready</h2>
+
+            <h2>
+              Your SRT is ready
+            </h2>
           </div>
-          <button id="downloadBtn" class="secondary" type="button">Download .srt</button>
+
+          <button
+            id="downloadBtn"
+            class="secondary"
+            type="button"
+          >
+            Download .srt
+          </button>
+
         </div>
-        <textarea id="output" spellcheck="false"></textarea>
-        <button id="copyBtn" class="ghost" type="button">Copy SRT Text</button>
+
+        <textarea
+          id="output"
+          spellcheck="false"
+        ></textarea>
+
+        <button
+          id="copyBtn"
+          class="ghost"
+          type="button"
+        >
+          Copy SRT Text
+        </button>
+
       </section>
+
     </section>
 
-    <p class="footer">API key ကို browser ထဲမထည့်ဘဲ server-side မှာပဲ သိမ်းထားပါတယ်။</p>
+    <p class="footer">
+      API key ကို browser ထဲမထည့်ဘဲ server-side မှာပဲ သိမ်းထားပါတယ်။
+    </p>
+
   </main>
-<script src="app.js"></script>
+
+  <script src="app.js"></script>
 </body>
 </html>
+```
