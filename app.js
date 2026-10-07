@@ -1,19 +1,33 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const API_BASE = "https://video-to-srt-54xt.onrender.com";
 
-  // =========================
+  // ==========================================
+  // RENDER BACKEND
+  // ==========================================
+
+  const API_BASE =
+    "https://video-to-srt-54xt.onrender.com";
+
+
+  // ==========================================
   // ELEMENTS
-  // =========================
+  // ==========================================
 
-  const form = document.getElementById("form");
-  const fileInput = document.getElementById("media");
-  const fileTitle = document.getElementById("fileTitle");
-  const fileHint = document.getElementById("fileHint");
+  const form =
+    document.getElementById("form");
+
+  const fileInput =
+    document.getElementById("media");
+
+  const fileTitle =
+    document.getElementById("fileTitle");
+
+  const fileHint =
+    document.getElementById("fileHint");
 
   const generateBtn =
     document.getElementById("generateBtn");
 
-  const status =
+  const statusBox =
     document.getElementById("status");
 
   const progressBox =
@@ -31,7 +45,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const progressMessage =
     document.getElementById("progressMessage");
 
-  const result =
+  const resultBox =
     document.getElementById("result");
 
   const output =
@@ -53,133 +67,113 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("targetLanguage");
 
 
-  // =========================
+  // ==========================================
   // STATE
-  // =========================
-
-  let currentSrt = "";
+  // ==========================================
 
   let currentJobId = null;
 
   let pollingTimer = null;
 
-  let progressTimer = null;
+  let fakeProgressTimer = null;
 
-  let currentProgress = 0;
+  let progress = 0;
 
   let generating = false;
 
 
-  // =========================
-  // INITIAL STATE
-  // =========================
+  // ==========================================
+  // BUTTON INITIAL STATE
+  // ==========================================
 
-  // IMPORTANT:
-  // If the HTML button has disabled="disabled",
-  // enable it here so the user can click Generate.
   if (generateBtn) {
     generateBtn.disabled = false;
     generateBtn.removeAttribute("disabled");
   }
 
-  if (progressBox) {
-    progressBox.hidden = true;
-  }
 
-  if (result) {
-    result.hidden = true;
-  }
-
-
-  // =========================
+  // ==========================================
   // PROGRESS
-  // =========================
+  // ==========================================
 
   function setProgress(
     value,
-    title = "",
-    message = ""
+    title,
+    message
   ) {
-    const number = Number(value);
 
-    if (!Number.isFinite(number)) {
-      return;
-    }
-
-    currentProgress = Math.max(
+    progress = Math.max(
       0,
-      Math.min(100, Math.round(number))
+      Math.min(
+        100,
+        Math.round(Number(value) || 0)
+      )
     );
+
 
     if (progressBar) {
       progressBar.style.width =
-        `${currentProgress}%`;
+        `${progress}%`;
     }
+
 
     if (progressPercent) {
       progressPercent.textContent =
-        `${currentProgress}%`;
+        `${progress}%`;
     }
+
 
     if (progressTitle) {
       progressTitle.textContent =
-        title;
+        title || "";
     }
+
 
     if (progressMessage) {
       progressMessage.textContent =
-        message;
+        message || "";
+    }
+
+
+    if (progressBox) {
+      progressBox.classList.remove(
+        "hidden"
+      );
+
+      progressBox.style.display =
+        "block";
     }
   }
 
 
-  // =========================
-  // PROGRESS ANIMATION
-  // =========================
+  // ==========================================
+  // STATUS
+  // ==========================================
 
-  function stopProgressAnimation() {
-    if (progressTimer) {
-      clearInterval(progressTimer);
-      progressTimer = null;
+  function showStatus(
+    message,
+    type = "info"
+  ) {
+
+    if (!statusBox) {
+      return;
     }
+
+    statusBox.textContent =
+      message;
+
+    statusBox.dataset.type =
+      type;
+
+    statusBox.classList.remove(
+      "hidden"
+    );
   }
 
 
-  function startProgressAnimation() {
-    stopProgressAnimation();
-
-    progressTimer = setInterval(() => {
-
-      if (!generating) {
-        return;
-      }
-
-      /*
-       * UI progress only.
-       *
-       * Backend progress will override this
-       * whenever the server reports a higher value.
-       *
-       * Never automatically reach 100 here.
-       */
-      if (currentProgress < 95) {
-
-        currentProgress += 1;
-
-        setProgress(
-          currentProgress,
-          "Generating SRT",
-          "AI is processing your video..."
-        );
-      }
-
-    }, 1000);
-  }
-
-
-  // =========================
-  // FILE INFORMATION
-  // =========================
+  // ==========================================
+  // FILE
+  // ==========================================
 
   function showFile(file) {
 
@@ -187,8 +181,10 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+
     const maxSize =
       100 * 1024 * 1024;
+
 
     if (file.size > maxSize) {
 
@@ -196,41 +192,21 @@ document.addEventListener("DOMContentLoaded", () => {
         "File size must be 100MB or less."
       );
 
-      if (fileInput) {
-        fileInput.value = "";
-      }
-
-      if (fileTitle) {
-        fileTitle.textContent =
-          "Choose a video file";
-      }
-
-      if (fileHint) {
-        fileHint.textContent =
-          "MP4, MOV, WEBM, MP3, M4A, WAV • Max 100MB";
-      }
-
-      if (generateBtn) {
-        generateBtn.disabled = true;
-      }
+      fileInput.value = "";
 
       return;
     }
 
-    // Enable Generate immediately.
-    if (generateBtn) {
-      generateBtn.disabled = false;
-      generateBtn.removeAttribute("disabled");
-    }
 
     if (fileTitle) {
       fileTitle.textContent =
         file.name;
     }
 
+
     if (fileHint) {
 
-      const sizeMB =
+      const size =
         (
           file.size /
           1024 /
@@ -238,20 +214,23 @@ document.addEventListener("DOMContentLoaded", () => {
         ).toFixed(1);
 
       fileHint.textContent =
-        `${sizeMB} MB • Ready to generate`;
+        `${size} MB • Ready to generate`;
     }
 
-    console.log(
-      "Selected file:",
-      file.name,
-      file.size
-    );
+
+    // Enable Generate button.
+    if (generateBtn) {
+      generateBtn.disabled = false;
+      generateBtn.removeAttribute(
+        "disabled"
+      );
+    }
   }
 
 
-  // =========================
-  // FILE INPUT
-  // =========================
+  // ==========================================
+  // FILE SELECT
+  // ==========================================
 
   if (fileInput) {
 
@@ -268,18 +247,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-  // =========================
+  // ==========================================
   // DRAG & DROP
-  // =========================
+  // ==========================================
 
   if (dropZone) {
 
     dropZone.addEventListener(
       "dragover",
       (event) => {
+
         event.preventDefault();
+
         dropZone.classList.add(
-          "drag-over"
+          "dragging"
         );
       }
     );
@@ -288,8 +269,9 @@ document.addEventListener("DOMContentLoaded", () => {
     dropZone.addEventListener(
       "dragleave",
       () => {
+
         dropZone.classList.remove(
-          "drag-over"
+          "dragging"
         );
       }
     );
@@ -302,7 +284,7 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
 
         dropZone.classList.remove(
-          "drag-over"
+          "dragging"
         );
 
         const file =
@@ -312,12 +294,15 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
 
+
         try {
 
           const dataTransfer =
             new DataTransfer();
 
-          dataTransfer.items.add(file);
+          dataTransfer.items.add(
+            file
+          );
 
           fileInput.files =
             dataTransfer.files;
@@ -325,10 +310,10 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (error) {
 
           console.warn(
-            "Could not assign dropped file:",
             error
           );
         }
+
 
         showFile(file);
       }
@@ -336,39 +321,41 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-  // =========================
-  // SELECT VALUES
-  // =========================
+  // ==========================================
+  // LANGUAGE
+  // ==========================================
 
   function getSourceLanguage() {
 
-    if (!sourceLanguage) {
+    const value =
+      sourceLanguage?.value ||
+      "Auto detect";
+
+
+    if (
+      value.toLowerCase() ===
+      "auto detect"
+    ) {
       return "auto";
     }
 
-    return (
-      sourceLanguage.value ||
-      "auto"
-    );
+
+    return value;
   }
 
 
   function getTargetLanguage() {
 
-    if (!targetLanguage) {
-      return "Myanmar (Burmese)";
-    }
-
     return (
-      targetLanguage.value ||
+      targetLanguage?.value ||
       "Myanmar (Burmese)"
     );
   }
 
 
-  // =========================
+  // ==========================================
   // STOP POLLING
-  // =========================
+  // ==========================================
 
   function stopPolling() {
 
@@ -383,324 +370,241 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-  // =========================
-  // RESET
-  // =========================
+  function stopFakeProgress() {
 
-  function resetForNewJob() {
+    if (fakeProgressTimer) {
 
-    stopPolling();
+      clearInterval(
+        fakeProgressTimer
+      );
 
-    stopProgressAnimation();
-
-    currentJobId = null;
-
-    currentSrt = "";
-
-    currentProgress = 0;
-
-    if (output) {
-      output.value = "";
+      fakeProgressTimer = null;
     }
-
-    if (result) {
-      result.hidden = true;
-    }
-
-    if (progressBox) {
-      progressBox.hidden = false;
-    }
-
-    setProgress(
-      0,
-      "Starting",
-      "Preparing your video..."
-    );
   }
 
 
-  // =========================
-  // DOWNLOAD SRT
-  // =========================
+  // ==========================================
+  // 0 → 1 → 2 → 3 → ...
+  // ==========================================
 
-  function downloadSrt() {
+  function startProgressAnimation() {
 
-    if (!currentSrt) {
+    stopFakeProgress();
 
-      alert(
-        "SRT is not ready yet."
-      );
 
-      return;
-    }
+    fakeProgressTimer =
+      setInterval(() => {
 
-    const blob =
-      new Blob(
-        [currentSrt],
-        {
-          type:
-            "application/x-subrip;charset=utf-8"
+        if (!generating) {
+          return;
         }
-      );
-
-    const url =
-      URL.createObjectURL(blob);
-
-    const link =
-      document.createElement("a");
-
-    link.href = url;
-
-    link.download =
-      "myanmar-subtitles.srt";
-
-    document.body.appendChild(link);
-
-    link.click();
-
-    link.remove();
-
-    URL.revokeObjectURL(url);
-  }
 
 
-  // =========================
-  // COPY SRT
-  // =========================
+        /*
+          UI progress only.
 
-  async function copySrt() {
+          Backend progress will override
+          this when it reports a higher value.
 
-    if (!currentSrt) {
-      return;
-    }
+          Never automatically reach 100%.
+        */
 
-    try {
+        if (progress < 95) {
 
-      await navigator.clipboard.writeText(
-        currentSrt
-      );
-
-      if (copyBtn) {
-
-        const oldText =
-          copyBtn.textContent;
-
-        copyBtn.textContent =
-          "Copied";
-
-        setTimeout(() => {
-
-          copyBtn.textContent =
-            oldText || "Copy";
-
-        }, 1500);
-      }
-
-    } catch (error) {
-
-      console.error(
-        "Copy failed:",
-        error
-      );
-
-      alert(
-        "Could not copy SRT."
-      );
-    }
-  }
-
-
-  // =========================
-  // CHECK JOB
-  // =========================
-
-  async function checkJob() {
-
-    if (!currentJobId) {
-      return false;
-    }
-
-    try {
-
-      const response =
-        await fetch(
-          `${API_BASE}/api/job/${currentJobId}`,
-          {
-            method: "GET",
-            cache: "no-store"
-          }
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok || !data.ok) {
-
-        throw new Error(
-          data.error ||
-          data.message ||
-          "Could not read job status."
-        );
-      }
-
-
-      // Server progress.
-      const serverProgress =
-        Number(
-          data.progress || 0
-        );
-
-
-      // Never move backwards.
-      if (
-        serverProgress >
-        currentProgress
-      ) {
-
-        setProgress(
-          serverProgress,
-          data.title ||
+          setProgress(
+            progress + 1,
             "Generating SRT",
-          data.message ||
             "AI is processing your video..."
-        );
-      }
-
-
-      // =========================
-      // COMPLETED
-      // =========================
-
-      if (
-        data.status ===
-        "completed"
-      ) {
-
-        generating = false;
-
-        stopPolling();
-
-        stopProgressAnimation();
-
-        currentSrt =
-          data.srt || "";
-
-        setProgress(
-          100,
-          "Complete",
-          "SRT generation completed successfully."
-        );
-
-        if (output) {
-          output.value =
-            currentSrt;
-        }
-
-        if (result) {
-          result.hidden = false;
-        }
-
-        if (status) {
-          status.textContent =
-            "SRT Ready";
-        }
-
-        if (generateBtn) {
-          generateBtn.disabled = false;
-          generateBtn.removeAttribute(
-            "disabled"
           );
-          generateBtn.textContent =
-            "Generate SRT";
         }
 
-        return true;
-      }
+      }, 1000);
+  }
 
 
-      // =========================
-      // FAILED
-      // =========================
+  // ==========================================
+  // JOB STATUS
+  // ==========================================
 
-      if (
-        data.status ===
-        "failed"
-      ) {
+  async function checkJob(
+    jobId
+  ) {
 
-        throw new Error(
-          data.message ||
-          "SRT generation failed."
-        );
-      }
+    const response =
+      await fetch(
+        `${API_BASE}/api/job/${encodeURIComponent(jobId)}`,
+        {
+          method: "GET",
+          cache: "no-store"
+        }
+      );
 
 
-      return false;
+    const data =
+      await response.json();
 
-    } catch (error) {
+
+    console.log(
+      "JOB:",
+      data
+    );
+
+
+    if (!response.ok || !data.ok) {
+
+      throw new Error(
+        data.error ||
+        data.message ||
+        `Job request failed (${response.status})`
+      );
+    }
+
+
+    // ========================================
+    // SERVER PROGRESS
+    // ========================================
+
+    const serverProgress =
+      Number(
+        data.progress || 0
+      );
+
+
+    if (
+      serverProgress >
+      progress
+    ) {
+
+      setProgress(
+        serverProgress,
+        data.title,
+        data.message
+      );
+    }
+
+
+    // ========================================
+    // COMPLETED
+    // ========================================
+
+    if (
+      data.status ===
+      "completed"
+    ) {
 
       generating = false;
 
       stopPolling();
 
-      stopProgressAnimation();
+      stopFakeProgress();
 
-      console.error(
-        "Job error:",
-        error
-      );
-
-      if (status) {
-        status.textContent =
-          "Error";
-      }
 
       setProgress(
-        currentProgress,
-        "Error",
-        error.message ||
-          "Something went wrong."
+        100,
+        "Complete",
+        "SRT generation completed successfully."
       );
 
+
+      if (output) {
+
+        output.value =
+          data.srt || "";
+      }
+
+
+      if (resultBox) {
+
+        resultBox.classList.remove(
+          "hidden"
+        );
+
+        resultBox.style.display =
+          "block";
+
+        resultBox.hidden =
+          false;
+      }
+
+
+      showStatus(
+        "SRT Ready",
+        "success"
+      );
+
+
       if (generateBtn) {
-        generateBtn.disabled = false;
+
+        generateBtn.disabled =
+          false;
+
         generateBtn.removeAttribute(
           "disabled"
         );
+
         generateBtn.textContent =
           "Generate SRT";
       }
 
+
       return true;
     }
+
+
+    // ========================================
+    // FAILED
+    // ========================================
+
+    if (
+      data.status ===
+      "failed"
+    ) {
+
+      throw new Error(
+        data.message ||
+        "SRT generation failed."
+      );
+    }
+
+
+    return false;
   }
 
 
-  // =========================
-  // START POLLING
-  // =========================
+  // ==========================================
+  // POLLING
+  // ==========================================
 
-  function startPolling() {
+  function startPolling(
+    jobId
+  ) {
 
     stopPolling();
 
-    /*
-     * Check immediately.
-     */
-    checkJob();
+
+    checkJob(jobId)
+      .catch(handleError);
 
 
-    /*
-     * Then check every 1.5 seconds.
-     */
     pollingTimer =
       setInterval(
         async () => {
 
-          const finished =
-            await checkJob();
+          try {
 
-          if (finished) {
-            stopPolling();
+            const finished =
+              await checkJob(
+                jobId
+              );
+
+
+            if (finished) {
+              stopPolling();
+            }
+
+          } catch (error) {
+
+            handleError(error);
           }
 
         },
@@ -709,9 +613,60 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-  // =========================
-  // GENERATE SRT
-  // =========================
+  // ==========================================
+  // ERROR
+  // ==========================================
+
+  function handleError(
+    error
+  ) {
+
+    console.error(
+      "SRT ERROR:",
+      error
+    );
+
+
+    generating = false;
+
+    stopPolling();
+
+    stopFakeProgress();
+
+
+    showStatus(
+      error.message ||
+      "Something went wrong.",
+      "error"
+    );
+
+
+    setProgress(
+      progress,
+      "Error",
+      error.message ||
+      "SRT generation failed."
+    );
+
+
+    if (generateBtn) {
+
+      generateBtn.disabled =
+        false;
+
+      generateBtn.removeAttribute(
+        "disabled"
+      );
+
+      generateBtn.textContent =
+        "Generate SRT";
+    }
+  }
+
+
+  // ==========================================
+  // GENERATE
+  // ==========================================
 
   if (form) {
 
@@ -721,18 +676,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
         event.preventDefault();
 
+
         console.log(
-          "Generate SRT clicked"
+          "================================"
+        );
+
+        console.log(
+          "GENERATE SRT CLICKED"
+        );
+
+        console.log(
+          "================================"
         );
 
 
-        // Prevent double click.
         if (generating) {
           return;
         }
 
 
-        // Get file.
         const file =
           fileInput?.files?.[0];
 
@@ -740,16 +702,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!file) {
 
           alert(
-            "Please upload a video first."
+            "Please select a video first."
           );
 
           return;
         }
 
 
-        // File size check.
         const maxSize =
           100 * 1024 * 1024;
+
 
         if (file.size > maxSize) {
 
@@ -761,13 +723,35 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
 
-        // =========================
-        // START
-        // =========================
-
         generating = true;
 
-        resetForNewJob();
+        currentJobId = null;
+
+        progress = 0;
+
+
+        stopPolling();
+
+        stopFakeProgress();
+
+
+        if (resultBox) {
+
+          resultBox.hidden =
+            true;
+
+          resultBox.classList.add(
+            "hidden"
+          );
+
+          resultBox.style.display =
+            "none";
+        }
+
+
+        if (output) {
+          output.value = "";
+        }
 
 
         if (generateBtn) {
@@ -780,12 +764,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
 
-        if (status) {
-          status.textContent =
-            "Generating...";
-        }
-
-
         setProgress(
           0,
           "Starting",
@@ -793,22 +771,31 @@ document.addEventListener("DOMContentLoaded", () => {
         );
 
 
-        // =========================
+        showStatus(
+          "Starting AI subtitle generation...",
+          "info"
+        );
+
+
+        // ======================================
         // FORM DATA
-        // =========================
+        // ======================================
 
         const formData =
           new FormData();
+
 
         formData.append(
           "media",
           file
         );
 
+
         formData.append(
           "sourceLanguage",
           getSourceLanguage()
         );
+
 
         formData.append(
           "targetLanguage",
@@ -817,7 +804,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
         console.log(
-          "Uploading:",
+          "File:",
           file.name
         );
 
@@ -834,20 +821,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
 
-          // =========================
-          // 1%
-          // =========================
+          // ====================================
+          // SEND TO RENDER
+          // ====================================
 
           setProgress(
             1,
             "Uploading",
-            "Uploading video..."
+            "Uploading video to server..."
           );
 
-
-          // =========================
-          // SEND TO RENDER
-          // =========================
 
           const response =
             await fetch(
@@ -859,8 +842,14 @@ document.addEventListener("DOMContentLoaded", () => {
             );
 
 
-          // Try JSON.
+          console.log(
+            "START JOB HTTP:",
+            response.status
+          );
+
+
           let data;
+
 
           try {
 
@@ -870,9 +859,15 @@ document.addEventListener("DOMContentLoaded", () => {
           } catch {
 
             throw new Error(
-              `Server returned HTTP ${response.status}`
+              `Render server returned HTTP ${response.status}`
             );
           }
+
+
+          console.log(
+            "START JOB DATA:",
+            data
+          );
 
 
           if (
@@ -888,139 +883,196 @@ document.addEventListener("DOMContentLoaded", () => {
           }
 
 
-          // =========================
-          // JOB CREATED
-          // =========================
+          if (!data.jobId) {
+
+            throw new Error(
+              "Render server did not return a job ID."
+            );
+          }
+
 
           currentJobId =
             data.jobId;
 
 
-          if (!currentJobId) {
-
-            throw new Error(
-              "Server did not return a job ID."
-            );
-          }
-
-
-          console.log(
-            "Job ID:",
-            currentJobId
-          );
-
+          // ====================================
+          // JOB STARTED
+          // ====================================
 
           setProgress(
             2,
             "Started",
-            "SRT generation started..."
+            "AI subtitle generation started..."
           );
 
-
-          // =========================
-          // START UI PROGRESS
-          // =========================
 
           startProgressAnimation();
 
 
-          // =========================
-          // START SERVER POLLING
-          // =========================
-
-          startPolling();
-
+          startPolling(
+            currentJobId
+          );
 
         } catch (error) {
 
-          generating = false;
+          handleError(error);
+        }
 
-          stopPolling();
+      }
+    );
+  }
 
-          stopProgressAnimation();
 
-          console.error(
-            "Generate SRT error:",
-            error
+  // ==========================================
+  // DOWNLOAD
+  // ==========================================
+
+  if (downloadBtn) {
+
+    downloadBtn.addEventListener(
+      "click",
+      () => {
+
+        const text =
+          output?.value || "";
+
+
+        if (!text.trim()) {
+
+          alert(
+            "SRT is not ready."
           );
 
-          if (status) {
-            status.textContent =
-              "Error";
-          }
+          return;
+        }
 
-          setProgress(
-            currentProgress,
-            "Error",
-            error.message ||
-              "Could not start SRT generation."
+
+        const blob =
+          new Blob(
+            [text],
+            {
+              type:
+                "application/x-subrip;charset=utf-8"
+            }
           );
 
-          if (generateBtn) {
 
-            generateBtn.disabled =
-              false;
+        const url =
+          URL.createObjectURL(
+            blob
+          );
 
-            generateBtn.removeAttribute(
-              "disabled"
-            );
 
-            generateBtn.textContent =
-              "Generate SRT";
-          }
+        const link =
+          document.createElement(
+            "a"
+          );
+
+
+        link.href =
+          url;
+
+        link.download =
+          "myanmar-subtitles.srt";
+
+
+        document.body.appendChild(
+          link
+        );
+
+        link.click();
+
+        link.remove();
+
+
+        URL.revokeObjectURL(
+          url
+        );
+      }
+    );
+  }
+
+
+  // ==========================================
+  // COPY
+  // ==========================================
+
+  if (copyBtn) {
+
+    copyBtn.addEventListener(
+      "click",
+      async () => {
+
+        const text =
+          output?.value || "";
+
+
+        if (!text.trim()) {
+          return;
+        }
+
+
+        try {
+
+          await navigator.clipboard.writeText(
+            text
+          );
+
+
+          const oldText =
+            copyBtn.textContent;
+
+
+          copyBtn.textContent =
+            "Copied";
+
+
+          setTimeout(() => {
+
+            copyBtn.textContent =
+              oldText ||
+              "Copy SRT Text";
+
+          }, 1500);
+
+
+        } catch {
+
+          output.focus();
+
+          output.select();
+
+          document.execCommand(
+            "copy"
+          );
         }
       }
     );
   }
 
 
-  // =========================
-  // DOWNLOAD BUTTON
-  // =========================
+  // ==========================================
+  // INITIAL
+  // ==========================================
 
-  if (downloadBtn) {
+  if (progressBox) {
 
-    downloadBtn.addEventListener(
-      "click",
-      downloadSrt
+    progressBox.classList.add(
+      "hidden"
     );
+
+    progressBox.style.display =
+      "none";
   }
 
-
-  // =========================
-  // COPY BUTTON
-  // =========================
-
-  if (copyBtn) {
-
-    copyBtn.addEventListener(
-      "click",
-      copySrt
-    );
-  }
-
-
-  // =========================
-  // DEBUG
-  // =========================
 
   console.log(
     "AI Subtitle Maker app.js loaded."
   );
 
   console.log(
-    "API:",
+    "Backend:",
     API_BASE
-  );
-
-  console.log(
-    "Generate button:",
-    generateBtn
-  );
-
-  console.log(
-    "File input:",
-    fileInput
   );
 
 });
