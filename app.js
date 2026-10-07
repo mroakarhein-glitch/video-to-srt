@@ -1,511 +1,1026 @@
-const API_BASE =
-  "https://video-to-srt-54xt.onrender.com";
+document.addEventListener("DOMContentLoaded", () => {
+  const API_BASE = "https://video-to-srt-54xt.onrender.com";
 
-const form =
-  document.getElementById("form");
+  // =========================
+  // ELEMENTS
+  // =========================
 
-const fileInput =
-  document.getElementById("media");
+  const form = document.getElementById("form");
+  const fileInput = document.getElementById("media");
+  const fileTitle = document.getElementById("fileTitle");
+  const fileHint = document.getElementById("fileHint");
 
-const fileTitle =
-  document.getElementById("fileTitle");
+  const generateBtn =
+    document.getElementById("generateBtn");
 
-const fileHint =
-  document.getElementById("fileHint");
+  const status =
+    document.getElementById("status");
 
-const generateBtn =
-  document.getElementById("generateBtn");
+  const progressBox =
+    document.getElementById("progressBox");
 
-const status =
-  document.getElementById("status");
+  const progressBar =
+    document.getElementById("progressBar");
 
-const progressBox =
-  document.getElementById("progressBox");
+  const progressPercent =
+    document.getElementById("progressPercent");
 
-const progressBar =
-  document.getElementById("progressBar");
+  const progressTitle =
+    document.getElementById("progressTitle");
 
-const progressPercent =
-  document.getElementById("progressPercent");
+  const progressMessage =
+    document.getElementById("progressMessage");
 
-const progressTitle =
-  document.getElementById("progressTitle");
+  const result =
+    document.getElementById("result");
 
-const progressMessage =
-  document.getElementById("progressMessage");
+  const output =
+    document.getElementById("output");
 
-const result =
-  document.getElementById("result");
+  const downloadBtn =
+    document.getElementById("downloadBtn");
 
-const output =
-  document.getElementById("output");
+  const copyBtn =
+    document.getElementById("copyBtn");
 
-const downloadBtn =
-  document.getElementById("downloadBtn");
+  const dropZone =
+    document.getElementById("dropZone");
 
-const copyBtn =
-  document.getElementById("copyBtn");
+  const sourceLanguage =
+    document.getElementById("sourceLanguage");
 
-const dropZone =
-  document.getElementById("dropZone");
+  const targetLanguage =
+    document.getElementById("targetLanguage");
 
-let currentSrt = "";
 
-let pollTimer = null;
+  // =========================
+  // STATE
+  // =========================
 
-let displayedProgress = 0;
+  let currentSrt = "";
 
-function setProgress(
-  value,
-  title = "",
-  message = ""
-) {
-  const safeValue = Math.max(
-    0,
-    Math.min(100, Math.round(value))
-  );
+  let currentJobId = null;
 
-  displayedProgress = safeValue;
+  let pollingTimer = null;
 
-  if (progressBar) {
-    progressBar.style.width =
-      `${safeValue}%`;
+  let progressTimer = null;
+
+  let currentProgress = 0;
+
+  let generating = false;
+
+
+  // =========================
+  // INITIAL STATE
+  // =========================
+
+  // IMPORTANT:
+  // If the HTML button has disabled="disabled",
+  // enable it here so the user can click Generate.
+  if (generateBtn) {
+    generateBtn.disabled = false;
+    generateBtn.removeAttribute("disabled");
   }
 
-  if (progressPercent) {
-    progressPercent.textContent =
-      `${safeValue}%`;
+  if (progressBox) {
+    progressBox.hidden = true;
   }
 
-  if (progressTitle) {
-    progressTitle.textContent =
-      title;
+  if (result) {
+    result.hidden = true;
   }
 
-  if (progressMessage) {
-    progressMessage.textContent =
-      message;
-  }
-}
 
-function showFile(file) {
-  if (!file) return;
+  // =========================
+  // PROGRESS
+  // =========================
 
-  const maxSize =
-    100 * 1024 * 1024;
+  function setProgress(
+    value,
+    title = "",
+    message = ""
+  ) {
+    const number = Number(value);
 
-  if (file.size > maxSize) {
-    alert(
-      "File size must be 100MB or less."
+    if (!Number.isFinite(number)) {
+      return;
+    }
+
+    currentProgress = Math.max(
+      0,
+      Math.min(100, Math.round(number))
     );
 
-    fileInput.value = "";
-
-    return;
-  }
-
-  if (fileTitle) {
-    fileTitle.textContent =
-      file.name;
-  }
-
-  if (fileHint) {
-    fileHint.textContent =
-      `${(
-        file.size /
-        1024 /
-        1024
-      ).toFixed(1)} MB • Ready to generate`;
-  }
-}
-
-if (fileInput) {
-  fileInput.addEventListener(
-    "change",
-    () => {
-      showFile(
-        fileInput.files?.[0]
-      );
+    if (progressBar) {
+      progressBar.style.width =
+        `${currentProgress}%`;
     }
-  );
-}
 
-if (dropZone) {
-  dropZone.addEventListener(
-    "dragover",
-    (event) => {
-      event.preventDefault();
+    if (progressPercent) {
+      progressPercent.textContent =
+        `${currentProgress}%`;
     }
-  );
 
-  dropZone.addEventListener(
-    "drop",
-    (event) => {
-      event.preventDefault();
-
-      const file =
-        event.dataTransfer.files?.[0];
-
-      if (!file) return;
-
-      try {
-        const dt =
-          new DataTransfer();
-
-        dt.items.add(file);
-
-        fileInput.files =
-          dt.files;
-      } catch {}
-
-      showFile(file);
+    if (progressTitle) {
+      progressTitle.textContent =
+        title;
     }
-  );
-}
 
-function getValue(id, fallback) {
-  const element =
-    document.getElementById(id);
-
-  return element?.value || fallback;
-}
-
-function downloadSrt(text) {
-  const blob =
-    new Blob(
-      [text],
-      {
-        type:
-          "application/x-subrip;charset=utf-8"
-      }
-    );
-
-  const url =
-    URL.createObjectURL(blob);
-
-  const a =
-    document.createElement("a");
-
-  a.href = url;
-
-  a.download =
-    "myanmar-subtitles.srt";
-
-  document.body.appendChild(a);
-
-  a.click();
-
-  a.remove();
-
-  URL.revokeObjectURL(url);
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
+    if (progressMessage) {
+      progressMessage.textContent =
+        message;
+    }
   }
-}
 
-function startSmoothProgress() {
-  stopPolling();
 
-  pollTimer =
-    setInterval(() => {
-      if (
-        displayedProgress >= 98
-      ) {
+  // =========================
+  // PROGRESS ANIMATION
+  // =========================
+
+  function stopProgressAnimation() {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+  }
+
+
+  function startProgressAnimation() {
+    stopProgressAnimation();
+
+    progressTimer = setInterval(() => {
+
+      if (!generating) {
         return;
       }
 
-      displayedProgress += 1;
+      /*
+       * UI progress only.
+       *
+       * Backend progress will override this
+       * whenever the server reports a higher value.
+       *
+       * Never automatically reach 100 here.
+       */
+      if (currentProgress < 95) {
 
-      setProgress(
-        displayedProgress,
-        "Generating SRT",
-        "AI is processing your video..."
-      );
-    }, 1200);
-}
+        currentProgress += 1;
 
-async function checkJob(jobId) {
-  try {
-    const response =
-      await fetch(
-        `${API_BASE}/api/job/${jobId}`
-      );
+        setProgress(
+          currentProgress,
+          "Generating SRT",
+          "AI is processing your video..."
+        );
+      }
 
-    const data =
-      await response.json();
+    }, 1000);
+  }
 
-    if (!response.ok || !data.ok) {
-      throw new Error(
-        data.error ||
-        "Could not read job status."
-      );
+
+  // =========================
+  // FILE INFORMATION
+  // =========================
+
+  function showFile(file) {
+
+    if (!file) {
+      return;
     }
 
-    const serverProgress =
-      Number(data.progress || 0);
+    const maxSize =
+      100 * 1024 * 1024;
 
-    if (
-      serverProgress >
-      displayedProgress
-    ) {
-      setProgress(
-        serverProgress,
-        data.title,
-        data.message
-      );
-    }
+    if (file.size > maxSize) {
 
-    if (
-      data.status ===
-      "completed"
-    ) {
-      stopPolling();
-
-      setProgress(
-        100,
-        "Complete",
-        "SRT generation completed successfully."
+      alert(
+        "File size must be 100MB or less."
       );
 
-      currentSrt =
-        data.srt || "";
-
-      if (output) {
-        output.value =
-          currentSrt;
+      if (fileInput) {
+        fileInput.value = "";
       }
 
-      if (result) {
-        result.hidden = false;
+      if (fileTitle) {
+        fileTitle.textContent =
+          "Choose a video file";
       }
 
-      if (status) {
-        status.textContent =
-          "SRT Ready";
+      if (fileHint) {
+        fileHint.textContent =
+          "MP4, MOV, WEBM, MP3, M4A, WAV • Max 100MB";
       }
 
-      generateBtn.disabled =
-        false;
+      if (generateBtn) {
+        generateBtn.disabled = true;
+      }
 
       return;
     }
 
-    if (
-      data.status ===
-      "failed"
-    ) {
-      stopPolling();
-
-      throw new Error(
-        data.message ||
-        "SRT generation failed."
-      );
+    // Enable Generate immediately.
+    if (generateBtn) {
+      generateBtn.disabled = false;
+      generateBtn.removeAttribute("disabled");
     }
-  } catch (error) {
+
+    if (fileTitle) {
+      fileTitle.textContent =
+        file.name;
+    }
+
+    if (fileHint) {
+
+      const sizeMB =
+        (
+          file.size /
+          1024 /
+          1024
+        ).toFixed(1);
+
+      fileHint.textContent =
+        `${sizeMB} MB • Ready to generate`;
+    }
+
+    console.log(
+      "Selected file:",
+      file.name,
+      file.size
+    );
+  }
+
+
+  // =========================
+  // FILE INPUT
+  // =========================
+
+  if (fileInput) {
+
+    fileInput.addEventListener(
+      "change",
+      () => {
+
+        const file =
+          fileInput.files?.[0];
+
+        showFile(file);
+      }
+    );
+  }
+
+
+  // =========================
+  // DRAG & DROP
+  // =========================
+
+  if (dropZone) {
+
+    dropZone.addEventListener(
+      "dragover",
+      (event) => {
+        event.preventDefault();
+        dropZone.classList.add(
+          "drag-over"
+        );
+      }
+    );
+
+
+    dropZone.addEventListener(
+      "dragleave",
+      () => {
+        dropZone.classList.remove(
+          "drag-over"
+        );
+      }
+    );
+
+
+    dropZone.addEventListener(
+      "drop",
+      (event) => {
+
+        event.preventDefault();
+
+        dropZone.classList.remove(
+          "drag-over"
+        );
+
+        const file =
+          event.dataTransfer?.files?.[0];
+
+        if (!file) {
+          return;
+        }
+
+        try {
+
+          const dataTransfer =
+            new DataTransfer();
+
+          dataTransfer.items.add(file);
+
+          fileInput.files =
+            dataTransfer.files;
+
+        } catch (error) {
+
+          console.warn(
+            "Could not assign dropped file:",
+            error
+          );
+        }
+
+        showFile(file);
+      }
+    );
+  }
+
+
+  // =========================
+  // SELECT VALUES
+  // =========================
+
+  function getSourceLanguage() {
+
+    if (!sourceLanguage) {
+      return "auto";
+    }
+
+    return (
+      sourceLanguage.value ||
+      "auto"
+    );
+  }
+
+
+  function getTargetLanguage() {
+
+    if (!targetLanguage) {
+      return "Myanmar (Burmese)";
+    }
+
+    return (
+      targetLanguage.value ||
+      "Myanmar (Burmese)"
+    );
+  }
+
+
+  // =========================
+  // STOP POLLING
+  // =========================
+
+  function stopPolling() {
+
+    if (pollingTimer) {
+
+      clearInterval(
+        pollingTimer
+      );
+
+      pollingTimer = null;
+    }
+  }
+
+
+  // =========================
+  // RESET
+  // =========================
+
+  function resetForNewJob() {
+
     stopPolling();
 
-    generateBtn.disabled =
-      false;
+    stopProgressAnimation();
 
-    if (status) {
-      status.textContent =
-        "Error";
+    currentJobId = null;
+
+    currentSrt = "";
+
+    currentProgress = 0;
+
+    if (output) {
+      output.value = "";
+    }
+
+    if (result) {
+      result.hidden = true;
+    }
+
+    if (progressBox) {
+      progressBox.hidden = false;
     }
 
     setProgress(
-      displayedProgress,
-      "Error",
-      error.message
+      0,
+      "Starting",
+      "Preparing your video..."
     );
-
-    console.error(error);
   }
-}
 
-if (form) {
-  form.addEventListener(
-    "submit",
-    async (event) => {
-      event.preventDefault();
 
-      const file =
-        fileInput?.files?.[0];
+  // =========================
+  // DOWNLOAD SRT
+  // =========================
 
-      if (!file) {
-        alert(
-          "Please upload a video first."
-        );
+  function downloadSrt() {
 
-        return;
-      }
+    if (!currentSrt) {
 
-      stopPolling();
-
-      currentSrt = "";
-
-      generateBtn.disabled =
-        true;
-
-      if (result) {
-        result.hidden = true;
-      }
-
-      if (output) {
-        output.value = "";
-      }
-
-      if (status) {
-        status.textContent =
-          "Generating...";
-      }
-
-      setProgress(
-        0,
-        "Starting",
-        "Preparing your video..."
+      alert(
+        "SRT is not ready yet."
       );
 
-      if (progressBox) {
-        progressBox.hidden = false;
-      }
-
-      const formData =
-        new FormData();
-
-      formData.append(
-        "media",
-        file
-      );
-
-      formData.append(
-        "sourceLanguage",
-        getValue(
-          "sourceLanguage",
-          "auto"
-        )
-      );
-
-      formData.append(
-        "targetLanguage",
-        getValue(
-          "targetLanguage",
-          "Myanmar (Burmese)"
-        )
-      );
-
-      try {
-        setProgress(
-          1,
-          "Uploading",
-          "Uploading video..."
-        );
-
-        const response =
-          await fetch(
-            `${API_BASE}/api/start-job`,
-            {
-              method: "POST",
-              body: formData
-            }
-          );
-
-        const data =
-          await response.json();
-
-        if (
-          !response.ok ||
-          !data.ok
-        ) {
-          throw new Error(
-            data.error ||
-            "Could not start SRT generation."
-          );
-        }
-
-        setProgress(
-          2,
-          "Started",
-          "SRT generation started..."
-        );
-
-        startSmoothProgress();
-
-        await checkJob(
-          data.jobId
-        );
-
-        pollTimer =
-          setInterval(
-            () => {
-              checkJob(
-                data.jobId
-              );
-            },
-            1500
-          );
-      } catch (error) {
-        stopPolling();
-
-        generateBtn.disabled =
-          false;
-
-        setProgress(
-          0,
-          "Error",
-          error.message
-        );
-
-        if (status) {
-          status.textContent =
-            "Error";
-        }
-
-        console.error(error);
-      }
+      return;
     }
-  );
-}
 
-if (downloadBtn) {
-  downloadBtn.addEventListener(
-    "click",
-    () => {
-      if (!currentSrt) return;
+    const blob =
+      new Blob(
+        [currentSrt],
+        {
+          type:
+            "application/x-subrip;charset=utf-8"
+        }
+      );
 
-      downloadSrt(
+    const url =
+      URL.createObjectURL(blob);
+
+    const link =
+      document.createElement("a");
+
+    link.href = url;
+
+    link.download =
+      "myanmar-subtitles.srt";
+
+    document.body.appendChild(link);
+
+    link.click();
+
+    link.remove();
+
+    URL.revokeObjectURL(url);
+  }
+
+
+  // =========================
+  // COPY SRT
+  // =========================
+
+  async function copySrt() {
+
+    if (!currentSrt) {
+      return;
+    }
+
+    try {
+
+      await navigator.clipboard.writeText(
         currentSrt
       );
-    }
-  );
-}
 
-if (copyBtn) {
-  copyBtn.addEventListener(
-    "click",
-    async () => {
-      if (!currentSrt) return;
+      if (copyBtn) {
 
-      try {
-        await navigator.clipboard.writeText(
-          currentSrt
-        );
+        const oldText =
+          copyBtn.textContent;
 
         copyBtn.textContent =
           "Copied";
 
         setTimeout(() => {
+
           copyBtn.textContent =
-            "Copy";
+            oldText || "Copy";
+
         }, 1500);
-      } catch {
-        alert(
-          "Could not copy SRT."
+      }
+
+    } catch (error) {
+
+      console.error(
+        "Copy failed:",
+        error
+      );
+
+      alert(
+        "Could not copy SRT."
+      );
+    }
+  }
+
+
+  // =========================
+  // CHECK JOB
+  // =========================
+
+  async function checkJob() {
+
+    if (!currentJobId) {
+      return false;
+    }
+
+    try {
+
+      const response =
+        await fetch(
+          `${API_BASE}/api/job/${currentJobId}`,
+          {
+            method: "GET",
+            cache: "no-store"
+          }
+        );
+
+      const data =
+        await response.json();
+
+      if (!response.ok || !data.ok) {
+
+        throw new Error(
+          data.error ||
+          data.message ||
+          "Could not read job status."
         );
       }
+
+
+      // Server progress.
+      const serverProgress =
+        Number(
+          data.progress || 0
+        );
+
+
+      // Never move backwards.
+      if (
+        serverProgress >
+        currentProgress
+      ) {
+
+        setProgress(
+          serverProgress,
+          data.title ||
+            "Generating SRT",
+          data.message ||
+            "AI is processing your video..."
+        );
+      }
+
+
+      // =========================
+      // COMPLETED
+      // =========================
+
+      if (
+        data.status ===
+        "completed"
+      ) {
+
+        generating = false;
+
+        stopPolling();
+
+        stopProgressAnimation();
+
+        currentSrt =
+          data.srt || "";
+
+        setProgress(
+          100,
+          "Complete",
+          "SRT generation completed successfully."
+        );
+
+        if (output) {
+          output.value =
+            currentSrt;
+        }
+
+        if (result) {
+          result.hidden = false;
+        }
+
+        if (status) {
+          status.textContent =
+            "SRT Ready";
+        }
+
+        if (generateBtn) {
+          generateBtn.disabled = false;
+          generateBtn.removeAttribute(
+            "disabled"
+          );
+          generateBtn.textContent =
+            "Generate SRT";
+        }
+
+        return true;
+      }
+
+
+      // =========================
+      // FAILED
+      // =========================
+
+      if (
+        data.status ===
+        "failed"
+      ) {
+
+        throw new Error(
+          data.message ||
+          "SRT generation failed."
+        );
+      }
+
+
+      return false;
+
+    } catch (error) {
+
+      generating = false;
+
+      stopPolling();
+
+      stopProgressAnimation();
+
+      console.error(
+        "Job error:",
+        error
+      );
+
+      if (status) {
+        status.textContent =
+          "Error";
+      }
+
+      setProgress(
+        currentProgress,
+        "Error",
+        error.message ||
+          "Something went wrong."
+      );
+
+      if (generateBtn) {
+        generateBtn.disabled = false;
+        generateBtn.removeAttribute(
+          "disabled"
+        );
+        generateBtn.textContent =
+          "Generate SRT";
+      }
+
+      return true;
     }
+  }
+
+
+  // =========================
+  // START POLLING
+  // =========================
+
+  function startPolling() {
+
+    stopPolling();
+
+    /*
+     * Check immediately.
+     */
+    checkJob();
+
+
+    /*
+     * Then check every 1.5 seconds.
+     */
+    pollingTimer =
+      setInterval(
+        async () => {
+
+          const finished =
+            await checkJob();
+
+          if (finished) {
+            stopPolling();
+          }
+
+        },
+        1500
+      );
+  }
+
+
+  // =========================
+  // GENERATE SRT
+  // =========================
+
+  if (form) {
+
+    form.addEventListener(
+      "submit",
+      async (event) => {
+
+        event.preventDefault();
+
+        console.log(
+          "Generate SRT clicked"
+        );
+
+
+        // Prevent double click.
+        if (generating) {
+          return;
+        }
+
+
+        // Get file.
+        const file =
+          fileInput?.files?.[0];
+
+
+        if (!file) {
+
+          alert(
+            "Please upload a video first."
+          );
+
+          return;
+        }
+
+
+        // File size check.
+        const maxSize =
+          100 * 1024 * 1024;
+
+        if (file.size > maxSize) {
+
+          alert(
+            "File size must be 100MB or less."
+          );
+
+          return;
+        }
+
+
+        // =========================
+        // START
+        // =========================
+
+        generating = true;
+
+        resetForNewJob();
+
+
+        if (generateBtn) {
+
+          generateBtn.disabled =
+            true;
+
+          generateBtn.textContent =
+            "Generating...";
+        }
+
+
+        if (status) {
+          status.textContent =
+            "Generating...";
+        }
+
+
+        setProgress(
+          0,
+          "Starting",
+          "Preparing your video..."
+        );
+
+
+        // =========================
+        // FORM DATA
+        // =========================
+
+        const formData =
+          new FormData();
+
+        formData.append(
+          "media",
+          file
+        );
+
+        formData.append(
+          "sourceLanguage",
+          getSourceLanguage()
+        );
+
+        formData.append(
+          "targetLanguage",
+          getTargetLanguage()
+        );
+
+
+        console.log(
+          "Uploading:",
+          file.name
+        );
+
+        console.log(
+          "Source:",
+          getSourceLanguage()
+        );
+
+        console.log(
+          "Target:",
+          getTargetLanguage()
+        );
+
+
+        try {
+
+          // =========================
+          // 1%
+          // =========================
+
+          setProgress(
+            1,
+            "Uploading",
+            "Uploading video..."
+          );
+
+
+          // =========================
+          // SEND TO RENDER
+          // =========================
+
+          const response =
+            await fetch(
+              `${API_BASE}/api/start-job`,
+              {
+                method: "POST",
+                body: formData
+              }
+            );
+
+
+          // Try JSON.
+          let data;
+
+          try {
+
+            data =
+              await response.json();
+
+          } catch {
+
+            throw new Error(
+              `Server returned HTTP ${response.status}`
+            );
+          }
+
+
+          if (
+            !response.ok ||
+            !data.ok
+          ) {
+
+            throw new Error(
+              data.error ||
+              data.message ||
+              `Server error ${response.status}`
+            );
+          }
+
+
+          // =========================
+          // JOB CREATED
+          // =========================
+
+          currentJobId =
+            data.jobId;
+
+
+          if (!currentJobId) {
+
+            throw new Error(
+              "Server did not return a job ID."
+            );
+          }
+
+
+          console.log(
+            "Job ID:",
+            currentJobId
+          );
+
+
+          setProgress(
+            2,
+            "Started",
+            "SRT generation started..."
+          );
+
+
+          // =========================
+          // START UI PROGRESS
+          // =========================
+
+          startProgressAnimation();
+
+
+          // =========================
+          // START SERVER POLLING
+          // =========================
+
+          startPolling();
+
+
+        } catch (error) {
+
+          generating = false;
+
+          stopPolling();
+
+          stopProgressAnimation();
+
+          console.error(
+            "Generate SRT error:",
+            error
+          );
+
+          if (status) {
+            status.textContent =
+              "Error";
+          }
+
+          setProgress(
+            currentProgress,
+            "Error",
+            error.message ||
+              "Could not start SRT generation."
+          );
+
+          if (generateBtn) {
+
+            generateBtn.disabled =
+              false;
+
+            generateBtn.removeAttribute(
+              "disabled"
+            );
+
+            generateBtn.textContent =
+              "Generate SRT";
+          }
+        }
+      }
+    );
+  }
+
+
+  // =========================
+  // DOWNLOAD BUTTON
+  // =========================
+
+  if (downloadBtn) {
+
+    downloadBtn.addEventListener(
+      "click",
+      downloadSrt
+    );
+  }
+
+
+  // =========================
+  // COPY BUTTON
+  // =========================
+
+  if (copyBtn) {
+
+    copyBtn.addEventListener(
+      "click",
+      copySrt
+    );
+  }
+
+
+  // =========================
+  // DEBUG
+  // =========================
+
+  console.log(
+    "AI Subtitle Maker app.js loaded."
   );
-}
+
+  console.log(
+    "API:",
+    API_BASE
+  );
+
+  console.log(
+    "Generate button:",
+    generateBtn
+  );
+
+  console.log(
+    "File input:",
+    fileInput
+  );
+
+});
