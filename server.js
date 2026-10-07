@@ -655,13 +655,13 @@ async function transcribeAudio(
 Return the spoken words verbatim.
 Do not translate.
 Preserve the original spoken language.
-Include word-level timing information.`
+`
       : `Transcribe this audio accurately.
 
 Automatically detect the spoken language.
 Return the spoken words verbatim.
 Do not translate.
-Include word-level timing information.`;
+`;
 
   const input = [
     {
@@ -669,13 +669,11 @@ Include word-level timing information.`;
       text: prompt
     },
     {
-      type: "file",
-      file: {
-        uri: audioFile.uri,
-        mimeType:
-          audioFile.mimeType ||
-          "audio/mpeg"
-      }
+      type: "audio",
+      uri: audioFile.uri,
+      mime_type:
+        audioFile.mimeType ||
+        "audio/mpeg"
     }
   ];
 
@@ -687,153 +685,19 @@ Include word-level timing information.`;
       input,
 
       generation_config: {
+        transcription_config: {
+          mode: {
+            type: "verbatim",
+            timestamp_granularities: [
+              "word"
+            ]
+          }
+        }
       }
     });
 
   return interaction;
 }
-
-/*
-  -------------------------------------------------------
-  Build subtitle cues
-  -------------------------------------------------------
-*/
-
-function buildSourceCues(
-  words
-) {
-  const cues = [];
-
-  let current = [];
-  let start = null;
-  let end = null;
-
-  function flush() {
-    if (
-      current.length === 0
-    ) {
-      return;
-    }
-
-    const text =
-      cleanText(
-        current.join(" ")
-      );
-
-    if (!text) {
-      current = [];
-      start = null;
-      end = null;
-      return;
-    }
-
-    cues.push({
-      id:
-        cues.length + 1,
-      start,
-      end,
-      text
-    });
-
-    current = [];
-    start = null;
-    end = null;
-  }
-
-  for (
-    const word of words
-  ) {
-    const wordText =
-      cleanText(
-        word.text
-      );
-
-    if (!wordText) {
-      continue;
-    }
-
-    if (
-      start === null
-    ) {
-      start = word.start;
-    }
-
-    end = word.end;
-
-    current.push(
-      wordText
-    );
-
-    const joined =
-      current.join(" ");
-
-    const punctuation =
-      /[.!?。！？]$/.test(
-        wordText
-      );
-
-    const tooManyWords =
-      current.length >= 16;
-
-    const tooLong =
-      joined.length >= 48;
-
-    const tooLongTime =
-      end - start >= 4.5;
-
-    if (
-      punctuation ||
-      tooManyWords ||
-      tooLong ||
-      tooLongTime
-    ) {
-      flush();
-    }
-  }
-
-  flush();
-
-  /*
-    Make sure subtitle end times
-    never overlap the next cue.
-  */
-
-  for (
-    let i = 0;
-    i < cues.length;
-    i++
-  ) {
-    const cue =
-      cues[i];
-
-    if (
-      i <
-      cues.length - 1
-    ) {
-      const next =
-        cues[i + 1];
-
-      cue.end =
-        Math.min(
-          cue.end,
-          Math.max(
-            cue.start + 0.5,
-            next.start - 0.05
-          )
-        );
-    }
-
-    if (
-      cue.end <= cue.start
-    ) {
-      cue.end =
-        cue.start + 1;
-    }
-  }
-
-  return cues;
-}
-
 /*
   -------------------------------------------------------
   Translation
