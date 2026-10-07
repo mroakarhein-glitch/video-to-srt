@@ -687,9 +687,6 @@ Include word-level timing information.`;
       input,
 
       generation_config: {
-        response_modalities: [
-          "TEXT"
-        ]
       }
     });
 
