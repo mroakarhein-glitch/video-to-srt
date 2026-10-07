@@ -1,13 +1,10 @@
 import express from "express";
 import multer from "multer";
 import dotenv from "dotenv";
-import ffmpegPath from "ffmpeg-static";
-import { spawn } from "child_process";
-import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
-
+import { randomUUID } from "crypto";
 import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
@@ -24,1664 +21,593 @@ if (!GEMINI_API_KEY) {
 const ai = new GoogleGenAI({
   apiKey: GEMINI_API_KEY
 });
-const TRANSCRIBE_MODEL = "gemini-3.8-flash";
-const TRANSLATION_MODEL = "gemini-3.5-flash-lite";
-const TRANSLATION_FALLBACK_MODEL = "gemini-3.5-flash";
+
+const MODEL = "gemini-3.8-flash";
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
-/*
-  -------------------------------------------------------
-  Job system
-  -------------------------------------------------------
-*/
+const upload = multer({
+  dest: os.tmpdir(),
+  limits: {
+    fileSize: MAX_FILE_SIZE
+  }
+});
+
+app.use(express.json());
+
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept"
+  );
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET, POST, OPTIONS"
+  );
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
 
 const jobs = new Map();
 
-function createJob() {
-  const id = randomUUID();
-
-  jobs.set(id, {
-    id,
-    status: "queued",
-    progress: 0,
-    title: "Preparing",
-    message: "Preparing your file...",
-    srt: null,
-    model: null,
-    cueCount: 0,
-    error: null,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  });
-
-  return id;
-}
-
-function updateJob(
-  jobId,
-  progress,
-  title,
-  message
-) {
+function updateJob(jobId, progress, title, message) {
   const job = jobs.get(jobId);
 
-  if (!job) {
-    return;
-  }
+  if (!job) return;
 
   job.progress = Math.max(
-    0,
-    Math.min(100, Math.round(progress))
+    job.progress || 0,
+    Math.min(100, Number(progress))
   );
 
-  job.title = title || job.title;
-  job.message = message || job.message;
+  job.title = title || "";
+  job.message = message || "";
   job.updatedAt = Date.now();
 }
 
-function completeJob(
-  jobId,
-  result
-) {
+function completeJob(jobId, srt) {
   const job = jobs.get(jobId);
 
-  if (!job) {
-    return;
-  }
+  if (!job) return;
 
-  job.status = "done";
+  job.status = "completed";
   job.progress = 100;
   job.title = "Complete";
-  job.message =
-    "SRT generation completed successfully.";
-  job.srt = result.srt;
-  job.model = result.model;
-  job.cueCount = result.cueCount;
+  job.message = "SRT generation completed successfully.";
+  job.srt = srt;
   job.updatedAt = Date.now();
 }
 
-function failJob(
-  jobId,
-  error
-) {
+function failJob(jobId, error) {
   const job = jobs.get(jobId);
 
-  if (!job) {
-    return;
-  }
+  if (!job) return;
 
-  job.status = "error";
-  job.title = "Generation failed";
-  job.message = error;
-  job.error = error;
+  job.status = "failed";
+  job.title = "Error";
+  job.message = error?.message || String(error);
   job.updatedAt = Date.now();
 }
 
-/*
-  Automatically remove finished jobs after 30 minutes.
-*/
+function cleanupJob(jobId) {
+  const job = jobs.get(jobId);
 
-function scheduleJobCleanup(jobId) {
-  setTimeout(
-    () => {
-      jobs.delete(jobId);
-    },
-    30 * 60 * 1000
+  if (!job) return;
+
+  if (job.filePath) {
+    try {
+      if (fs.existsSync(job.filePath)) {
+        fs.unlinkSync(job.filePath);
+      }
+    } catch {}
+  }
+
+  jobs.delete(jobId);
+}
+
+function scheduleCleanup(jobId) {
+  setTimeout(() => {
+    cleanupJob(jobId);
+  }, 30 * 60 * 1000);
+}
+
+function formatTime(seconds) {
+  let total = Number(seconds);
+
+  if (!Number.isFinite(total) || total < 0) {
+    total = 0;
+  }
+
+  const hours = Math.floor(total / 3600);
+
+  total -= hours * 3600;
+
+  const minutes = Math.floor(total / 60);
+
+  const secs = Math.floor(total - minutes * 60);
+
+  const milliseconds = Math.round(
+    (total - Math.floor(total)) * 1000
   );
-}
-
-/*
-  -------------------------------------------------------
-  Upload configuration
-  -------------------------------------------------------
-*/
-
-const uploadDir = path.join(
-  os.tmpdir(),
-  "video-to-srt-uploads"
-);
-
-fs.mkdirSync(
-  uploadDir,
-  {
-    recursive: true
-  }
-);
-
-const storage = multer.diskStorage({
-  destination: (
-    req,
-    file,
-    cb
-  ) => {
-    cb(null, uploadDir);
-  },
-
-  filename: (
-    req,
-    file,
-    cb
-  ) => {
-    const ext =
-      path.extname(file.originalname) ||
-      ".bin";
-
-    cb(
-      null,
-      `${Date.now()}-${randomUUID()}${ext}`
-    );
-  }
-});
-
-const upload = multer({
-  storage,
-
-  limits: {
-    fileSize: MAX_FILE_SIZE
-  },
-
-  fileFilter: (
-    req,
-    file,
-    cb
-  ) => {
-    const allowed = [
-      "video/mp4",
-      "video/quicktime",
-      "video/webm",
-      "audio/mpeg",
-      "audio/mp3",
-      "audio/mp4",
-      "audio/x-m4a",
-      "audio/wav",
-      "audio/x-wav",
-      "audio/wave"
-    ];
-
-    if (
-      allowed.includes(
-        file.mimetype
-      )
-    ) {
-      cb(null, true);
-      return;
-    }
-
-    /*
-      Some phones send unusual MIME types.
-      Extension check keeps the upload friendly.
-    */
-
-    const ext =
-      path
-        .extname(file.originalname)
-        .toLowerCase();
-
-    const allowedExtensions = [
-      ".mp4",
-      ".mov",
-      ".webm",
-      ".mp3",
-      ".m4a",
-      ".wav"
-    ];
-
-    if (
-      allowedExtensions.includes(ext)
-    ) {
-      cb(null, true);
-      return;
-    }
-
-    cb(
-      new Error(
-        "Unsupported media format."
-      )
-    );
-  }
-});
-
-app.use(
-  express.json({
-    limit: "2mb"
-  })
-);
-
-app.use(
-  express.static(
-    path.join(process.cwd())
-  )
-);
-
-/*
-  -------------------------------------------------------
-  Utility
-  -------------------------------------------------------
-*/
-
-function normalizeLanguage(
-  value
-) {
-  if (
-    !value ||
-    value === "auto"
-  ) {
-    return null;
-  }
-
-  return String(value)
-    .trim()
-    .toLowerCase();
-}
-
-function getLanguageName(
-  code
-) {
-  const map = {
-    my: "Myanmar (Burmese)",
-    en: "English",
-    zh: "Chinese",
-    th: "Thai",
-    ja: "Japanese",
-    ko: "Korean"
-  };
 
   return (
-    map[code] ||
-    code ||
-    "the target language"
+    String(hours).padStart(2, "0") +
+    ":" +
+    String(minutes).padStart(2, "0") +
+    ":" +
+    String(secs).padStart(2, "0") +
+    "," +
+    String(milliseconds).padStart(3, "0")
   );
 }
 
-function offsetToSeconds(
-  value
-) {
-  if (
-    typeof value === "number"
-  ) {
-    /*
-      Gemini timestamps may arrive in
-      seconds or microseconds.
-    */
-
-    if (value > 100000) {
-      return value / 1000000;
-    }
-
-    return value;
+function extractJson(text) {
+  if (!text) {
+    throw new Error("Gemini returned empty output.");
   }
 
-  if (
-    typeof value === "string"
-  ) {
-    const parsed =
-      Number(value);
+  let cleaned = String(text).trim();
 
-    if (
-      Number.isFinite(parsed)
-    ) {
-      return offsetToSeconds(
-        parsed
-      );
-    }
-  }
-
-  if (
-    value &&
-    typeof value === "object"
-  ) {
-    if (
-      typeof value.seconds ===
-      "number"
-    ) {
-      const nanos =
-        Number(
-          value.nanos || 0
-        );
-
-      return (
-        value.seconds +
-        nanos / 1e9
-      );
-    }
-
-    if (
-      typeof value.microseconds ===
-      "number"
-    ) {
-      return (
-        value.microseconds /
-        1000000
-      );
-    }
-  }
-
-  return 0;
-}
-
-function cleanText(
-  text
-) {
-  return String(text || "")
-    .replace(/\s+/g, " ")
+  cleaned = cleaned
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
     .trim();
-}
 
-function formatSrtTime(
-  seconds
-) {
-  const safe =
-    Math.max(
-      0,
-      Number(seconds) || 0
-    );
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
 
-  const hours =
-    Math.floor(
-      safe / 3600
-    );
+  const start = cleaned.indexOf("[");
 
-  const minutes =
-    Math.floor(
-      (safe % 3600) / 60
-    );
+  const end = cleaned.lastIndexOf("]");
 
-  const secs =
-    Math.floor(
-      safe % 60
-    );
+  if (start !== -1 && end !== -1 && end > start) {
+    const possibleJson = cleaned.slice(start, end + 1);
 
-  const milliseconds =
-    Math.floor(
-      (safe - Math.floor(safe)) *
-        1000
-    );
+    try {
+      return JSON.parse(possibleJson);
+    } catch {}
+  }
 
-  const pad = (
-    value,
-    length = 2
-  ) =>
-    String(value).padStart(
-      length,
-      "0"
-    );
+  const objectStart = cleaned.indexOf("{");
 
-  return (
-    `${pad(hours)}:` +
-    `${pad(minutes)}:` +
-    `${pad(secs)},` +
-    `${pad(milliseconds, 3)}`
-  );
-}
+  const objectEnd = cleaned.lastIndexOf("}");
 
-/*
-  -------------------------------------------------------
-  FFmpeg audio extraction
-  -------------------------------------------------------
-*/
-
-function extractAudio(
-  inputPath,
-  outputPath
-) {
-  return new Promise(
-    (
-      resolve,
-      reject
-    ) => {
-      const args = [
-        "-y",
-        "-i",
-        inputPath,
-
-        "-vn",
-
-        "-ac",
-        "1",
-
-        "-ar",
-        "16000",
-
-        "-b:a",
-        "64k",
-
-        outputPath
-      ];
-
-      const child =
-        spawn(
-          ffmpegPath,
-          args,
-          {
-            stdio: [
-              "ignore",
-              "ignore",
-              "pipe"
-            ]
-          }
-        );
-
-      let stderr = "";
-
-      child.stderr.on(
-        "data",
-        data => {
-          stderr +=
-            data.toString();
-        }
-      );
-
-      child.on(
-        "error",
-        error => {
-          reject(error);
-        }
-      );
-
-      child.on(
-        "close",
-        code => {
-          if (code === 0) {
-            resolve();
-            return;
-          }
-
-          reject(
-            new Error(
-              `FFmpeg failed: ${stderr.slice(-2000)}`
-            )
-          );
-        }
-      );
-    }
-  );
-}
-
-/*
-  -------------------------------------------------------
-  Gemini file handling
-  -------------------------------------------------------
-*/
-
-async function waitForFileActive(
-  fileName
-) {
-  const maxAttempts = 60;
-
-  for (
-    let attempt = 0;
-    attempt < maxAttempts;
-    attempt++
+  if (
+    objectStart !== -1 &&
+    objectEnd !== -1 &&
+    objectEnd > objectStart
   ) {
-    const file =
-      await ai.files.get({
-        name: fileName
-      });
-
-    const state =
-      String(
-        file.state || ""
-      ).toUpperCase();
-
-    if (
-      state === "ACTIVE"
-    ) {
-      return file;
-    }
-
-    if (
-      state === "FAILED"
-    ) {
-      throw new Error(
-        "Gemini file processing failed."
-      );
-    }
-
-    await new Promise(
-      resolve =>
-        setTimeout(
-          resolve,
-          2000
-        )
+    const possibleJson = cleaned.slice(
+      objectStart,
+      objectEnd + 1
     );
+
+    try {
+      return JSON.parse(possibleJson);
+    } catch {}
   }
 
   throw new Error(
-    "Gemini file processing timed out."
+    "Gemini returned subtitle data in an unreadable format."
   );
 }
 
-/*
-  -------------------------------------------------------
-  Transcription
-  -------------------------------------------------------
-*/
+function normalizeCues(data) {
+  let cues = data;
 
-function extractWordAnnotations(
-  interaction
-) {
-  const annotations = [];
+  if (!Array.isArray(cues)) {
+    if (Array.isArray(cues?.subtitles)) {
+      cues = cues.subtitles;
+    } else if (Array.isArray(cues?.segments)) {
+      cues = cues.segments;
+    } else if (Array.isArray(cues?.cues)) {
+      cues = cues.cues;
+    } else {
+      throw new Error("No subtitle segments were returned.");
+    }
+  }
 
-  const contents =
-    interaction?.outputs ||
-    interaction?.output ||
-    [];
+  const result = [];
 
-  const list = Array.isArray(contents)
-    ? contents
-    : [contents];
+  for (const item of cues) {
+    const start = Number(
+      item.start ??
+      item.startTime ??
+      item.start_seconds
+    );
 
-  for (
-    const item of list
-  ) {
-    const itemAnnotations =
-      item?.content
-        ?.annotations ||
-      item?.annotations ||
-      [];
+    const end = Number(
+      item.end ??
+      item.endTime ??
+      item.end_seconds
+    );
+
+    const text = String(
+      item.text ??
+      item.translation ??
+      item.subtitle ??
+      ""
+    ).trim();
 
     if (
-      !Array.isArray(
-        itemAnnotations
-      )
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      !text
     ) {
       continue;
     }
 
-    for (
-      const annotation of
-      itemAnnotations
-    ) {
-      if (
-        annotation?.type !==
-        "word_info"
-      ) {
-        continue;
-      }
-
-      const text =
-        cleanText(
-          annotation.text
-        );
-
-      if (!text) {
-        continue;
-      }
-
-      const start =
-        offsetToSeconds(
-          annotation.start
-        );
-
-      const end =
-        offsetToSeconds(
-          annotation.end
-        );
-
-      if (
-        end <= start
-      ) {
-        continue;
-      }
-
-      annotations.push({
-        text,
-        start,
-        end
-      });
+    if (end <= start) {
+      continue;
     }
-  }
 
-  return annotations;
-}
-
-async function transcribeAudio(
-  audioFile,
-  sourceLanguage
-) {
-  const language =
-    normalizeLanguage(
-      sourceLanguage
-    );
-
-  const prompt =
-    language
-      ? `Transcribe this audio accurately in ${getLanguageName(
-          language
-        )}.
-
-Return the spoken words verbatim.
-Do not translate.
-Preserve the original spoken language.
-`
-      : `Transcribe this audio accurately.
-
-Automatically detect the spoken language.
-Return the spoken words verbatim.
-Do not translate.
-`;
-
-  const input = [
-    {
-      type: "text",
-      text: prompt
-    },
-    {
-      type: "audio",
-      uri: audioFile.uri,
-      mime_type:
-        audioFile.mimeType ||
-        "audio/mpeg"
-    }
-  ];
-
-  const interaction =
-    await ai.interactions.create({
-      model:
-        TRANSCRIBE_MODEL,
-
-      input,
-
-      generation_config: {
-        transcription_config: {
-          mode: {
-            type: "verbatim",
-            timestamp_granularities: [
-              "word"
-            ]
-          }
-        }
-      }
+    result.push({
+      start,
+      end,
+      text
     });
-
-  return interaction;
-}
-/*
-  -------------------------------------------------------
-  Translation
-  -------------------------------------------------------
-*/
-
-async function translateBatch(
-  cues,
-  targetLanguage
-) {
-  const languageName =
-    getLanguageName(
-      targetLanguage
-    );
-
-  const cueData =
-    cues.map(
-      cue => ({
-        id: cue.id,
-        text: cue.text
-      })
-    );
-
-  const prompt =
-    `Translate the following subtitle segments into ${languageName}.
-
-Rules:
-- Translate naturally and accurately.
-- Preserve the meaning.
-- Do not add explanations.
-- Do not remove information.
-- Keep the subtitle IDs exactly.
-- Return one translation for every ID.
-
-SUBTITLES:
-${JSON.stringify(
-  cueData
-)}`;
-
-  const responseSchema = {
-    type: "array",
-    items: {
-      type: "object",
-      properties: {
-        id: {
-          type: "integer"
-        },
-        translation: {
-          type: "string"
-        }
-      },
-      required: [
-        "id",
-        "translation"
-      ]
-    }
-  };
-
-  let response;
-
-  try {
-    response =
-      await ai.models.generateContent(
-        {
-          model:
-            TRANSLATION_MODEL,
-
-          contents: prompt,
-
-          config: {
-            responseMimeType:
-              "application/json",
-
-            responseSchema
-          }
-        }
-      );
-  } catch (
-    firstError
-  ) {
-    console.warn(
-      "Primary translation model failed. Trying fallback.",
-      firstError?.message
-    );
-
-    response =
-      await ai.models.generateContent(
-        {
-          model:
-            TRANSLATION_FALLBACK_MODEL,
-
-          contents: prompt,
-
-          config: {
-            responseMimeType:
-              "application/json",
-
-            responseSchema
-          }
-        }
-      );
   }
 
-  const raw =
-    response?.text ||
-    "";
+  result.sort((a, b) => a.start - b.start);
 
-  let parsed;
-
-  try {
-    parsed =
-      JSON.parse(raw);
-  } catch (
-    error
-  ) {
-    throw new Error(
-      "Gemini translation returned invalid JSON."
-    );
+  if (!result.length) {
+    throw new Error("No usable subtitles were returned.");
   }
 
-  if (
-    !Array.isArray(parsed)
-  ) {
-    throw new Error(
-      "Gemini translation returned an invalid result."
-    );
-  }
-
-  const byId =
-    new Map();
-
-  for (
-    const item of parsed
-  ) {
-    if (
-      Number.isInteger(
-        item?.id
-      )
-    ) {
-      byId.set(
-        item.id,
-        cleanText(
-          item.translation
-        )
-      );
-    }
-  }
-
-  return cues.map(
-    cue => {
-      const translated =
-        byId.get(
-          cue.id
-        );
-
-      if (!translated) {
-        /*
-          If Gemini accidentally misses
-          one item, preserve the source
-          rather than breaking the SRT.
-        */
-        return cue.text;
-      }
-
-      return translated;
-    }
-  );
+  return result;
 }
 
-/*
-  Faster translation:
-  - 60 cues per batch
-  - 3 batches at the same time
-*/
-
-async function translateAllCues(
-  cues,
-  targetLanguage,
-  onProgress
-) {
-  const BATCH_SIZE = 60;
-  const CONCURRENCY = 3;
-
-  if (
-    cues.length === 0
-  ) {
-    return [];
-  }
-
-  const batches = [];
-
-  for (
-    let i = 0;
-    i < cues.length;
-    i += BATCH_SIZE
-  ) {
-    batches.push(
-      cues.slice(
-        i,
-        i + BATCH_SIZE
-      )
-    );
-  }
-
-  const results =
-    new Array(
-      batches.length
-    );
-
-  let nextIndex = 0;
-  let completed = 0;
-
-  async function worker() {
-    while (true) {
-      const index =
-        nextIndex++;
-
-      if (
-        index >=
-        batches.length
-      ) {
-        return;
-      }
-
-      const batch =
-        batches[index];
-
-      const translated =
-        await translateBatch(
-          batch,
-          targetLanguage
-        );
-
-      results[index] =
-        translated;
-
-      completed++;
-
-      const percent =
-        65 +
-        Math.round(
-          (completed /
-            batches.length) *
-            25
-        );
-
-      onProgress(
-        percent,
-        "Translating",
-        `Translating batch ${completed} of ${batches.length}...`
-      );
-    }
-  }
-
-  const workerCount =
-    Math.min(
-      CONCURRENCY,
-      batches.length
-    );
-
-  await Promise.all(
-    Array.from(
-      {
-        length:
-          workerCount
-      },
-      () => worker()
-    )
-  );
-
-  return results.flat();
-}
-
-/*
-  -------------------------------------------------------
-  SRT
-  -------------------------------------------------------
-*/
-
-function wrapSubtitle(
-  text,
-  maxChars = 42
-) {
-  const clean =
-    cleanText(text);
-
-  if (
-    clean.length <=
-    maxChars
-  ) {
-    return clean;
-  }
-
-  const words =
-    clean.split(" ");
-
-  const lines = [];
-  let line = "";
-
-  for (
-    const word of words
-  ) {
-    const next =
-      line
-        ? `${line} ${word}`
-        : word;
-
-    if (
-      next.length >
-      maxChars &&
-      line
-    ) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = next;
-    }
-  }
-
-  if (line) {
-    lines.push(line);
-  }
-
-  if (
-    lines.length <= 2
-  ) {
-    return lines.join("\n");
-  }
-
-  return (
-    lines
-      .slice(0, 2)
-      .join("\n")
-  );
-}
-
-function buildSrt(
-  cues,
-  translatedTexts
-) {
+function buildSrt(cues) {
   return cues
-    .map(
-      (
-        cue,
-        index
-      ) => {
-        const text =
-          translatedTexts[
-            index
-          ] ||
-          cue.text;
-
-        return (
-          `${index + 1}\n` +
-          `${formatSrtTime(
-            cue.start
-          )} --> ${formatSrtTime(
-            cue.end
-          )}\n` +
-          `${wrapSubtitle(
-            text
-          )}\n`
-        );
-      }
-    )
+    .map((cue, index) => {
+      return (
+        `${index + 1}\n` +
+        `${formatTime(cue.start)} --> ${formatTime(cue.end)}\n` +
+        `${cue.text}\n`
+      );
+    })
     .join("\n");
 }
 
-/*
-  -------------------------------------------------------
-  Full SRT generation
-  -------------------------------------------------------
-*/
-
 async function generateSrt({
-  mediaPath,
+  filePath,
+  mimeType,
   sourceLanguage,
   targetLanguage,
-  onProgress
+  jobId
 }) {
-  const progress =
-    typeof onProgress ===
-    "function"
-      ? onProgress
-      : () => {};
+  updateJob(
+    jobId,
+    1,
+    "Preparing",
+    "Preparing your video..."
+  );
 
-  const workDir =
-    fs.mkdtempSync(
-      path.join(
-        os.tmpdir(),
-        "video-srt-"
-      )
+  const uploadedFile = await ai.files.upload({
+    file: filePath,
+    config: {
+      mimeType
+    }
+  });
+
+  updateJob(
+    jobId,
+    8,
+    "Uploading",
+    "Video uploaded. Waiting for Gemini..."
+  );
+
+  let videoFile = uploadedFile;
+
+  while (videoFile.state === "PROCESSING") {
+    await new Promise((resolve) =>
+      setTimeout(resolve, 2000)
     );
 
-  const audioPath =
-    path.join(
-      workDir,
-      "audio.mp3"
-    );
+    videoFile = await ai.files.get({
+      name: videoFile.name
+    });
 
-  let uploadedFile =
-    null;
-
-  try {
-    /*
-      1. Extract audio
-    */
-
-    progress(
-      2,
-      "Preparing",
-      "Extracting audio from your media..."
-    );
-
-    await extractAudio(
-      mediaPath,
-      audioPath
-    );
-
-    progress(
+    updateJob(
+      jobId,
       10,
-      "Audio ready",
-      "Audio extraction completed."
+      "Processing video",
+      "Gemini is preparing the video..."
     );
-
-    /*
-      2. Upload to Gemini
-    */
-
-    progress(
-      12,
-      "Uploading",
-      "Uploading audio to Gemini..."
-    );
-
-    uploadedFile =
-      await ai.files.upload({
-        file: audioPath,
-        config: {
-          mimeType:
-            "audio/mpeg"
-        }
-      });
-
-    progress(
-      20,
-      "Gemini upload",
-      "Audio uploaded. Waiting for Gemini..."
-    );
-
-    /*
-      3. Wait until Gemini file is active
-    */
-
-    const activeFile =
-      await waitForFileActive(
-        uploadedFile.name
-      );
-
-    progress(
-      28,
-      "Ready for transcription",
-      "Gemini is ready to transcribe the audio."
-    );
-
-    /*
-      4. Transcription
-    */
-
-    progress(
-      30,
-      "Transcribing",
-      "Gemini is converting speech to text..."
-    );
-
-    const interaction =
-      await transcribeAudio(
-        activeFile,
-        sourceLanguage
-      );
-
-    progress(
-      55,
-      "Transcription complete",
-      "Speech transcription completed."
-    );
-
-    /*
-      5. Word timestamps
-    */
-
-    const words =
-      extractWordAnnotations(
-        interaction
-      );
-
-    if (
-      words.length === 0
-    ) {
-      throw new Error(
-        "Gemini returned no word timing information."
-      );
-    }
-
-    /*
-      6. Build source cues
-    */
-
-    const sourceCues =
-      buildSourceCues(
-        words
-      );
-
-    if (
-      sourceCues.length === 0
-    ) {
-      throw new Error(
-        "No subtitle cues could be created."
-      );
-    }
-
-    progress(
-      62,
-      "Creating subtitles",
-      `Created ${sourceCues.length} subtitle segments.`
-    );
-
-    /*
-      7. Translation
-    */
-
-    const normalizedSource =
-      normalizeLanguage(
-        sourceLanguage
-      );
-
-    const normalizedTarget =
-      normalizeLanguage(
-        targetLanguage
-      );
-
-    let translatedTexts;
-
-    if (
-      normalizedSource &&
-      normalizedTarget &&
-      normalizedSource ===
-        normalizedTarget
-    ) {
-      translatedTexts =
-        sourceCues.map(
-          cue => cue.text
-        );
-
-      progress(
-        90,
-        "Translation skipped",
-        "Source and target languages are the same."
-      );
-    } else {
-      progress(
-        65,
-        "Translating",
-        "Translating subtitles in parallel batches..."
-      );
-
-      translatedTexts =
-        await translateAllCues(
-          sourceCues,
-          normalizedTarget ||
-            "my",
-          progress
-        );
-    }
-
-    /*
-      8. Build final SRT
-    */
-
-    progress(
-      96,
-      "Building SRT",
-      "Formatting the final subtitle file..."
-    );
-
-    const srt =
-      buildSrt(
-        sourceCues,
-        translatedTexts
-      );
-
-    progress(
-      100,
-      "Complete",
-      "SRT generation completed successfully."
-    );
-
-    return {
-      srt,
-      model:
-        TRANSCRIBE_MODEL,
-      cueCount:
-        sourceCues.length
-    };
-  } finally {
-    /*
-      Delete Gemini uploaded file.
-    */
-
-    if (
-      uploadedFile?.name
-    ) {
-      try {
-        await ai.files.delete({
-          name:
-            uploadedFile.name
-        });
-      } catch (
-        error
-      ) {
-        console.warn(
-          "Could not delete Gemini file:",
-          error?.message
-        );
-      }
-    }
-
-    /*
-      Remove temporary files.
-    */
-
-    try {
-      fs.rmSync(
-        workDir,
-        {
-          recursive: true,
-          force: true
-        }
-      );
-    } catch (
-      error
-    ) {
-      console.warn(
-        "Could not clean work directory:",
-        error?.message
-      );
-    }
   }
+
+  if (videoFile.state === "FAILED") {
+    throw new Error("Gemini could not process this video.");
+  }
+
+  updateJob(
+    jobId,
+    18,
+    "Video ready",
+    "Starting subtitle generation..."
+  );
+
+  const sourceText =
+    sourceLanguage && sourceLanguage !== "auto"
+      ? sourceLanguage
+      : "Automatically detect the spoken language.";
+
+  const targetText =
+    targetLanguage || "Myanmar (Burmese)";
+
+  const prompt = `
+You are generating subtitles for a video.
+
+SOURCE LANGUAGE:
+${sourceText}
+
+TARGET SUBTITLE LANGUAGE:
+${targetText}
+
+TASK:
+Create a complete subtitle transcript for the spoken dialogue in the video.
+
+IMPORTANT:
+- Do NOT summarize.
+- Do NOT skip dialogue.
+- Preserve the actual meaning of the speech.
+- Translate the dialogue into the TARGET SUBTITLE LANGUAGE.
+- Keep subtitle sentences natural and readable.
+- Include timestamps in seconds.
+- Start and end times must correspond to the actual spoken dialogue.
+- Return ONLY valid JSON.
+- Do not use Markdown.
+- Do not add explanations.
+
+Return exactly this JSON structure:
+
+[
+  {
+    "start": 0.0,
+    "end": 2.5,
+    "text": "translated subtitle"
+  }
+]
+
+Create all subtitle segments for the entire video.
+`;
+
+  updateJob(
+    jobId,
+    25,
+    "Analyzing video",
+    "AI is listening to the dialogue..."
+  );
+
+  const interaction = await ai.interactions.create({
+    model: MODEL,
+    input: [
+      {
+        type: "video",
+        uri: videoFile.uri,
+        mime_type: videoFile.mimeType,
+        processing: "agentic"
+      },
+      {
+        type: "text",
+        text: prompt
+      }
+    ],
+    background: true
+  });
+
+  updateJob(
+    jobId,
+    35,
+    "Generating subtitles",
+    "Gemini is creating the subtitle timestamps..."
+  );
+
+  let result = interaction;
+
+  while (
+    result.status === "in_progress" ||
+    result.status === "processing"
+  ) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, 3000)
+    );
+
+    result = await ai.interactions.get(
+      result.id
+    );
+
+    updateJob(
+      jobId,
+      Math.min(
+        85,
+        (jobs.get(jobId)?.progress || 35) + 3
+      ),
+      "Generating subtitles",
+      "AI is still processing the video..."
+    );
+  }
+
+  if (
+    result.status === "failed" ||
+    result.status === "cancelled"
+  ) {
+    throw new Error(
+      result.error?.message ||
+      "Gemini subtitle generation failed."
+    );
+  }
+
+  updateJob(
+    jobId,
+    90,
+    "Building SRT",
+    "Formatting subtitle file..."
+  );
+
+  const outputText =
+    result.output_text ||
+    result.outputText ||
+    "";
+
+  const parsed = extractJson(outputText);
+
+  const cues = normalizeCues(parsed);
+
+  const srt = buildSrt(cues);
+
+  updateJob(
+    jobId,
+    98,
+    "Finishing",
+    "Preparing your SRT file..."
+  );
+
+  return srt;
 }
 
-/*
-  -------------------------------------------------------
-  Start Job
-  -------------------------------------------------------
-*/
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    model: MODEL
+  });
+});
 
 app.post(
   "/api/start-job",
   upload.any(),
-  async (
-    req,
-    res
-  ) => {
-    let mediaFile =
-      null;
-
+  async (req, res) => {
     try {
-      const files =
-        Array.isArray(
-          req.files
-        )
-          ? req.files
-          : [];
-
-      mediaFile =
-        files.find(
-          file =>
-            [
-              "media",
-              "file",
-              "video",
-              "audio"
-            ].includes(
-              file.fieldname
-            )
-        ) ||
-        files[0];
-
-      if (!mediaFile) {
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            error:
-              "No media file was uploaded."
-          });
+      if (!GEMINI_API_KEY) {
+        return res.status(500).json({
+          ok: false,
+          error: "GEMINI_API_KEY is missing on Render."
+        });
       }
 
-      const jobId =
-        createJob();
+      const file =
+        req.files?.find(
+          (item) =>
+            item.fieldname === "media" ||
+            item.fieldname === "file" ||
+            item.fieldname === "video" ||
+            item.fieldname === "audio"
+        ) ||
+        req.files?.[0];
+
+      if (!file) {
+        return res.status(400).json({
+          ok: false,
+          error: "Please upload a video file."
+        });
+      }
+
+      const jobId = randomUUID();
+
+      jobs.set(jobId, {
+        status: "running",
+        progress: 0,
+        title: "Starting",
+        message: "Starting SRT generation...",
+        filePath: file.path,
+        updatedAt: Date.now(),
+        srt: null
+      });
 
       const sourceLanguage =
-        req.body?.sourceLanguage ||
-        "auto";
+        req.body?.sourceLanguage || "auto";
 
       const targetLanguage =
         req.body?.targetLanguage ||
-        "my";
+        "Myanmar (Burmese)";
 
-      updateJob(
-        jobId,
-        1,
-        "Preparing",
-        "Upload received. Starting subtitle generation..."
-      );
-
-      /*
-        Return immediately.
-        The heavy work continues in background.
-      */
-
-      res.status(202).json({
+      res.json({
         ok: true,
         jobId
       });
 
-      /*
-        Start background processing.
-      */
-
       generateSrt({
-        mediaPath:
-          mediaFile.path,
-
+        filePath: file.path,
+        mimeType:
+          file.mimetype || "video/mp4",
         sourceLanguage,
-
         targetLanguage,
-
-        onProgress: (
-          progress,
-          title,
-          message
-        ) => {
-          updateJob(
-            jobId,
-            progress,
-            title,
-            message
-          );
-        }
+        jobId
       })
-        .then(
-          result => {
-            completeJob(
-              jobId,
-              result
-            );
+        .then((srt) => {
+          completeJob(jobId, srt);
 
-            scheduleJobCleanup(
-              jobId
-            );
-          }
-        )
-        .catch(
-          error => {
-            console.error(
-              `Job ${jobId} failed:`,
-              error
-            );
+          setTimeout(() => {
+            const job = jobs.get(jobId);
 
-            failJob(
-              jobId,
-              error?.message ||
-                "SRT generation failed."
-            );
-
-            scheduleJobCleanup(
-              jobId
-            );
-          }
-        )
-        .finally(
-          () => {
-            try {
-              fs.unlinkSync(
-                mediaFile.path
-              );
-            } catch (
-              error
-            ) {
-              /*
-                File may already have been removed.
-              */
+            if (job) {
+              job.filePath = null;
             }
-          }
-        );
-    } catch (
-      error
-    ) {
-      console.error(
-        error
-      );
-
-      if (
-        mediaFile?.path
-      ) {
-        try {
-          fs.unlinkSync(
-            mediaFile.path
+          }, 1000);
+        })
+        .catch((error) => {
+          console.error(
+            "SRT generation error:",
+            error
           );
-        } catch (
-          cleanupError
-        ) {}
-      }
 
-      if (
-        !res.headersSent
-      ) {
-        return res
-          .status(500)
-          .json({
-            ok: false,
-            error:
-              error?.message ||
-              "Could not start job."
-          });
-      }
-    }
-  }
-);
+          failJob(jobId, error);
 
-/*
-  -------------------------------------------------------
-  Job Status
-  -------------------------------------------------------
-*/
-
-app.get(
-  "/api/job/:jobId",
-  (
-    req,
-    res
-  ) => {
-    const job =
-      jobs.get(
-        req.params.jobId
-      );
-
-    if (!job) {
-      return res
-        .status(404)
-        .json({
-          ok: false,
-          error:
-            "Job not found or expired."
+          try {
+            if (fs.existsSync(file.path)) {
+              fs.unlinkSync(file.path);
+            }
+          } catch {}
         });
-    }
 
-    return res.json({
-      ok: true,
+      scheduleCleanup(jobId);
+    } catch (error) {
+      console.error(error);
 
-      jobId:
-        job.id,
-
-      status:
-        job.status,
-
-      progress:
-        job.progress,
-
-      title:
-        job.title,
-
-      message:
-        job.message,
-
-      srt:
-        job.status === "done"
-          ? job.srt
-          : null,
-
-      model:
-        job.status === "done"
-          ? job.model
-          : null,
-
-      cueCount:
-        job.status === "done"
-          ? job.cueCount
-          : 0,
-
-      error:
-        job.status === "error"
-          ? job.error
-          : null
-    });
-  }
-);
-
-/*
-  -------------------------------------------------------
-  Health
-  -------------------------------------------------------
-*/
-
-app.get(
-  "/health",
-  (
-    req,
-    res
-  ) => {
-    res.json({
-      ok: true,
-      service:
-        "video-to-srt",
-      transcriptionModel:
-        TRANSCRIBE_MODEL,
-      translationModel:
-        TRANSLATION_MODEL
-    });
-  }
-);
-
-/*
-  -------------------------------------------------------
-  Error handler
-  -------------------------------------------------------
-*/
-
-app.use(
-  (
-    error,
-    req,
-    res,
-    next
-  ) => {
-    console.error(
-      "Server error:",
-      error
-    );
-
-    if (
-      error?.code ===
-      "LIMIT_FILE_SIZE"
-    ) {
-      return res
-        .status(413)
-        .json({
-          ok: false,
-          error:
-            "File is too large. Maximum size is 100MB."
-        });
-    }
-
-    return res
-      .status(500)
-      .json({
+      res.status(500).json({
         ok: false,
         error:
           error?.message ||
-          "Internal server error."
+          "Could not start the job."
       });
+    }
   }
 );
 
-/*
-  -------------------------------------------------------
-  Start server
-  -------------------------------------------------------
-*/
+app.get("/api/job/:jobId", (req, res) => {
+  const job = jobs.get(req.params.jobId);
 
-app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
-    console.log(
-      `Video-to-SRT server running on port ${PORT}`
-    );
-
-    console.log(
-      `Transcription model: ${TRANSCRIBE_MODEL}`
-    );
-
-    console.log(
-      `Translation model: ${TRANSLATION_MODEL}`
-    );
+  if (!job) {
+    return res.status(404).json({
+      ok: false,
+      error: "Job not found."
+    });
   }
-);
+
+  res.json({
+    ok: true,
+    status: job.status,
+    progress: job.progress,
+    title: job.title,
+    message: job.message,
+    srt:
+      job.status === "completed"
+        ? job.srt
+        : null
+  });
+});
+
+app.use(express.static(path.join(process.cwd())));
+
+app.listen(PORT, () => {
+  console.log(
+    `AI Subtitle Maker server running on port ${PORT}`
+  );
+});
