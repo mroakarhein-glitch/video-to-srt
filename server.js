@@ -24,8 +24,7 @@ if (!GEMINI_API_KEY) {
 const ai = new GoogleGenAI({
   apiKey: GEMINI_API_KEY
 });
-
-const TRANSCRIBE_MODEL = "gemini-3.5-transcribe";
+const TRANSCRIBE_MODEL = "gemini-3.8-flash";
 const TRANSLATION_MODEL = "gemini-3.5-flash-lite";
 const TRANSLATION_FALLBACK_MODEL = "gemini-3.5-flash";
 
