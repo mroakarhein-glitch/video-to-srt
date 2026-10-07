@@ -1,169 +1,148 @@
-const form =
-  document.getElementById(
-    "form"
-  );
+const form = document.getElementById("form");
+const fileInput = document.getElementById("media");
+const fileTitle = document.getElementById("fileTitle");
+const fileHint = document.getElementById("fileHint");
+const generateBtn = document.getElementById("generateBtn");
+const statusBox = document.getElementById("status");
+const resultBox = document.getElementById("result");
+const output = document.getElementById("output");
+const downloadBtn = document.getElementById("downloadBtn");
+const copyBtn = document.getElementById("copyBtn");
+const dropZone = document.getElementById("dropZone");
 
-const fileInput =
-  document.getElementById(
-    "media"
-  );
 
-const fileTitle =
-  document.getElementById(
-    "fileTitle"
-  );
+/* =========================
+   CREATE PROGRESS UI
+========================= */
 
-const fileHint =
-  document.getElementById(
-    "fileHint"
-  );
+let progressBox =
+  document.getElementById("progressBox");
 
-const generateBtn =
-  document.getElementById(
-    "generateBtn"
-  );
+if (!progressBox) {
+  progressBox = document.createElement("div");
 
-const statusBox =
-  document.getElementById(
-    "status"
-  );
+  progressBox.id = "progressBox";
 
-const progressBox =
-  document.getElementById(
-    "progressBox"
-  );
+  progressBox.innerHTML = `
+    <div style="
+      margin-top:20px;
+      padding:18px;
+      border-radius:16px;
+      background:rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.12);
+    ">
+
+      <div style="
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        margin-bottom:10px;
+      ">
+        <strong id="progressTitle">
+          Starting
+        </strong>
+
+        <strong id="progressPercent">
+          0%
+        </strong>
+      </div>
+
+      <div style="
+        width:100%;
+        height:10px;
+        background:rgba(255,255,255,.12);
+        border-radius:20px;
+        overflow:hidden;
+      ">
+        <div id="progressBar" style="
+          width:0%;
+          height:100%;
+          border-radius:20px;
+          background:linear-gradient(
+            90deg,
+            #00c6ff,
+            #8b5cf6
+          );
+          transition:width .4s ease;
+        "></div>
+      </div>
+
+      <div id="progressMessage" style="
+        margin-top:10px;
+        font-size:13px;
+        opacity:.8;
+      ">
+        Preparing your file...
+      </div>
+
+    </div>
+  `;
+
+  if (form) {
+    form.appendChild(progressBox);
+  } else {
+    document.body.appendChild(progressBox);
+  }
+}
+
 
 const progressBar =
-  document.getElementById(
-    "progressBar"
-  );
+  document.getElementById("progressBar");
 
 const progressPercent =
-  document.getElementById(
-    "progressPercent"
-  );
+  document.getElementById("progressPercent");
 
 const progressTitle =
-  document.getElementById(
-    "progressTitle"
-  );
+  document.getElementById("progressTitle");
 
 const progressMessage =
-  document.getElementById(
-    "progressMessage"
-  );
-
-const resultBox =
-  document.getElementById(
-    "result"
-  );
-
-const output =
-  document.getElementById(
-    "output"
-  );
-
-const downloadBtn =
-  document.getElementById(
-    "downloadBtn"
-  );
-
-const copyBtn =
-  document.getElementById(
-    "copyBtn"
-  );
-
-const dropZone =
-  document.getElementById(
-    "dropZone"
-  );
+  document.getElementById("progressMessage");
 
 
-/*
-  -------------------------------------------------------
-  Helpers
-  -------------------------------------------------------
-*/
+/* =========================
+   HELPERS
+========================= */
 
-function showFile(
-  file
-) {
+function showFile(file) {
   if (!file) {
-    fileTitle.textContent =
-      "No file selected";
-
-    fileHint.textContent =
-      "MP4, MOV, WEBM, MP3, M4A, WAV • Max 100MB";
+    if (fileTitle) {
+      fileTitle.textContent = "No file selected";
+    }
 
     return;
   }
 
   const sizeMB =
-    file.size /
-    1024 /
-    1024;
+    file.size / 1024 / 1024;
 
-  fileTitle.textContent =
-    file.name;
-
-  fileHint.textContent =
-    `${sizeMB.toFixed(
-      1
-    )} MB • Ready to generate`;
-}
-
-function showStatus(
-  message,
-  type = "info"
-) {
-  if (!statusBox) {
-    return;
+  if (fileTitle) {
+    fileTitle.textContent = file.name;
   }
 
-  statusBox.textContent =
-    message;
-
-  statusBox.dataset.type =
-    type;
-}
-
-function showProgress() {
-  if (progressBox) {
-    progressBox.hidden =
-      false;
+  if (fileHint) {
+    fileHint.textContent =
+      `${sizeMB.toFixed(1)} MB • Ready to generate`;
   }
-
-  updateProgress(
-    0,
-    "Starting",
-    "Preparing your file..."
-  );
 }
+
 
 function updateProgress(
   percent,
   title,
   message
 ) {
-  const value =
-    Math.max(
-      0,
-      Math.min(
-        100,
-        Number(percent) || 0
-      )
-    );
+  const value = Math.max(
+    0,
+    Math.min(100, Number(percent) || 0)
+  );
 
   if (progressBar) {
-    progressBar.style.width =
-      `${value}%`;
+    progressBar.style.width = `${value}%`;
   }
 
   if (progressPercent) {
     progressPercent.textContent =
-      `${Math.round(
-        value
-      )}%`;
+      `${Math.round(value)}%`;
   }
 
   if (progressTitle) {
@@ -175,86 +154,79 @@ function updateProgress(
     progressMessage.textContent =
       message || "";
   }
+
+  progressBox.style.display = "block";
 }
 
-function sleep(
-  ms
+
+function showStatus(
+  message,
+  type = "info"
 ) {
+  if (!statusBox) return;
+
+  statusBox.textContent = message;
+  statusBox.dataset.type = type;
+}
+
+
+function sleep(ms) {
   return new Promise(
-    resolve =>
-      setTimeout(
-        resolve,
-        ms
-      )
+    resolve => setTimeout(resolve, ms)
   );
 }
 
-function setGenerating(
-  value
-) {
-  if (!generateBtn) {
-    return;
-  }
 
-  generateBtn.disabled =
-    value;
+function setGenerating(value) {
+  if (!generateBtn) return;
+
+  generateBtn.disabled = value;
 
   if (value) {
-    generateBtn.dataset.originalText =
+    generateBtn.dataset.oldText =
       generateBtn.textContent;
 
     generateBtn.textContent =
       "Generating...";
   } else {
     generateBtn.textContent =
-      generateBtn.dataset.originalText ||
+      generateBtn.dataset.oldText ||
       "Generate SRT";
   }
 }
 
 
-/*
-  -------------------------------------------------------
-  File selection
-  -------------------------------------------------------
-*/
+/* =========================
+   FILE SELECT
+========================= */
 
 if (fileInput) {
   fileInput.addEventListener(
     "change",
     () => {
-      showFile(
-        fileInput.files[0]
-      );
+      showFile(fileInput.files[0]);
     }
   );
 }
 
 
-/*
-  -------------------------------------------------------
-  Drag and drop
-  -------------------------------------------------------
-*/
+/* =========================
+   DRAG DROP
+========================= */
 
 if (dropZone) {
   dropZone.addEventListener(
     "dragover",
     event => {
       event.preventDefault();
-
-      dropZone.classList.add(
-        "dragging"
-      );
+      dropZone.classList.add("dragging");
     }
   );
 
   dropZone.addEventListener(
     "dragleave",
     () => {
-      dropZone.classList.remove(
-        "dragging"
-      );
+      dropZone.classList.remove("dragging");
     }
   );
 
@@ -263,175 +235,172 @@ if (dropZone) {
     event => {
       event.preventDefault();
 
-      dropZone.classList.remove(
-        "dragging"
-      );
+      dropZone.classList.remove("dragging");
 
       const files =
         event.dataTransfer?.files;
 
-      if (
-        !files ||
-        !files.length
-      ) {
+      if (!files || !files.length) {
         return;
       }
 
       try {
-        fileInput.files =
-          files;
-      } catch (
-        error
-      ) {
-        /*
-          Some browsers do not allow
-          direct assignment.
-          The normal file picker
-          remains available.
-        */
-      }
+        fileInput.files = files;
+      } catch (error) {}
 
-      showFile(
-        files[0]
-      );
+      showFile(files[0]);
     }
   );
 }
 
 
-/*
-  -------------------------------------------------------
-  Watch backend job
-  -------------------------------------------------------
-*/
+/* =========================
+   WATCH JOB
+========================= */
 
-async function watchJob(
-  jobId
-) {
+async function watchJob(jobId) {
+
+  console.log(
+    "Watching job:",
+    jobId
+  );
+
   while (true) {
-    let response;
 
     try {
-      response =
+
+      const response =
         await fetch(
-          `/api/job/${encodeURIComponent(
-            jobId
-          )}`,
+          `/api/job/${encodeURIComponent(jobId)}`,
           {
-            method: "GET",
             cache: "no-store"
           }
         );
-    } catch (
-      error
-    ) {
-      showStatus(
-        "Connection temporarily lost. Retrying...",
-        "warning"
+
+      console.log(
+        "Job response:",
+        response.status
       );
 
-      await sleep(
-        1500
-      );
-
-      continue;
-    }
-
-    let data;
-
-    try {
-      data =
+      const data =
         await response.json();
-    } catch (
-      error
-    ) {
-      showStatus(
-        "Invalid server response. Retrying...",
-        "error"
+
+      console.log(
+        "Job data:",
+        data
       );
 
-      await sleep(
-        1500
-      );
 
-      continue;
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error ||
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
           "Could not read job status."
-      );
-    }
+        );
+      }
 
-    updateProgress(
-      data.progress,
-      data.title,
-      data.message
-    );
 
-    if (
-      data.status ===
-      "done"
-    ) {
       updateProgress(
-        100,
-        "Complete",
-        "SRT generation completed successfully."
+        data.progress,
+        data.title,
+        data.message
       );
 
-      output.value =
-        data.srt || "";
 
-      resultBox.hidden =
-        false;
+      if (data.status === "done") {
 
-      showStatus(
-        `Done • ${data.cueCount || 0} subtitle segments`,
-        "success"
-      );
+        updateProgress(
+          100,
+          "Complete",
+          "SRT generation completed successfully."
+        );
 
-      setGenerating(
-        false
-      );
+        if (output) {
+          output.value =
+            data.srt || "";
+        }
 
-      return data;
-    }
+        if (resultBox) {
+          resultBox.hidden = false;
+          resultBox.style.display = "block";
+        }
 
-    if (
-      data.status ===
-      "error"
-    ) {
-      throw new Error(
-        data.error ||
+        showStatus(
+          `Done • ${data.cueCount || 0} subtitle segments`,
+          "success"
+        );
+
+        setGenerating(false);
+
+        return;
+      }
+
+
+      if (data.status === "error") {
+        throw new Error(
+          data.error ||
           data.message ||
           "SRT generation failed."
-      );
-    }
+        );
+      }
 
-    await sleep(
-      700
-    );
+
+      await sleep(700);
+
+    } catch (error) {
+
+      console.error(
+        "Job polling error:",
+        error
+      );
+
+      /*
+        Retry connection problems.
+        But if the server explicitly says
+        the job failed, stop.
+      */
+
+      if (
+        error.message &&
+        !error.message.includes("Failed to fetch")
+      ) {
+        throw error;
+      }
+
+      updateProgress(
+        1,
+        "Connecting",
+        "Waiting for server response..."
+      );
+
+      await sleep(1500);
+    }
   }
 }
 
 
-/*
-  -------------------------------------------------------
-  Generate
-  -------------------------------------------------------
-*/
+/* =========================
+   GENERATE SRT
+========================= */
 
 if (form) {
+
   form.addEventListener(
     "submit",
     async event => {
+
       event.preventDefault();
+
+      console.log(
+        "Generate button clicked"
+      );
+
 
       const file =
         fileInput?.files?.[0];
 
+
       if (!file) {
+
         showStatus(
           "Please select a video or audio file first.",
           "error"
@@ -440,15 +409,13 @@ if (form) {
         return;
       }
 
-      const maxSize =
-        100 *
-        1024 *
-        1024;
 
-      if (
-        file.size >
-        maxSize
-      ) {
+      const maxSize =
+        100 * 1024 * 1024;
+
+
+      if (file.size > maxSize) {
+
         showStatus(
           "File is larger than 100MB.",
           "error"
@@ -457,41 +424,57 @@ if (form) {
         return;
       }
 
+
       /*
-        Reset result
+        RESET
       */
 
       if (resultBox) {
-        resultBox.hidden =
-          true;
+        resultBox.hidden = true;
+        resultBox.style.display = "none";
       }
 
       if (output) {
-        output.value =
-          "";
+        output.value = "";
       }
 
-      showProgress();
+
+      /*
+        SHOW 0% IMMEDIATELY
+      */
+
+      updateProgress(
+        0,
+        "Starting",
+        "Preparing your file..."
+      );
+
 
       showStatus(
-        "Uploading and starting AI processing...",
+        "Starting AI subtitle generation...",
         "info"
       );
 
-      setGenerating(
-        true
-      );
+
+      setGenerating(true);
+
 
       try {
-        const data =
-          new FormData(
-            form
-          );
+
+        const formData =
+          new FormData(form);
+
+
+        console.log(
+          "Uploading:",
+          file.name,
+          file.size
+        );
+
 
         /*
           IMPORTANT:
-          The backend now creates a job
-          and returns immediately.
+          New backend endpoint.
         */
 
         const response =
@@ -499,98 +482,124 @@ if (form) {
             "/api/start-job",
             {
               method: "POST",
-              body: data
+              body: formData
             }
           );
 
-        let result;
 
-        try {
-          result =
-            await response.json();
-        } catch (
-          error
-        ) {
+        console.log(
+          "Start-job response:",
+          response.status
+        );
+
+
+        const data =
+          await response.json();
+
+
+        console.log(
+          "Start-job data:",
+          data
+        );
+
+
+        if (!response.ok) {
+
           throw new Error(
-            "Server returned an invalid response."
+            data.error ||
+            `Server error ${response.status}`
           );
         }
 
-        if (
-          !response.ok ||
-          !result.ok
-        ) {
+
+        if (!data.ok) {
+
           throw new Error(
-            result?.error ||
-              "Could not start SRT generation."
+            data.error ||
+            "Could not start the job."
           );
         }
 
-        const jobId =
-          result.jobId;
 
-        if (!jobId) {
+        if (!data.jobId) {
+
           throw new Error(
             "Server did not return a job ID."
           );
         }
+
+
+        /*
+          SHOW 1% / JOB STARTED
+        */
+
+        updateProgress(
+          1,
+          "Job started",
+          "AI processing has started..."
+        );
+
 
         showStatus(
           "AI processing started.",
           "info"
         );
 
+
         /*
-          Poll every ~700ms.
-          Backend provides real stage progress.
+          WATCH REAL BACKEND PROGRESS
         */
 
         await watchJob(
-          jobId
+          data.jobId
         );
-      } catch (
-        error
-      ) {
+
+      } catch (error) {
+
         console.error(
+          "Generate error:",
           error
         );
+
 
         updateProgress(
           0,
           "Error",
-          error?.message ||
-            "Something went wrong."
+          error.message ||
+          "Something went wrong."
         );
 
+
         showStatus(
-          error?.message ||
-            "SRT generation failed.",
+          error.message ||
+          "SRT generation failed.",
           "error"
         );
 
-        setGenerating(
-          false
-        );
+
+        setGenerating(false);
       }
+
     }
   );
 }
 
 
-/*
-  -------------------------------------------------------
-  Download SRT
-  -------------------------------------------------------
-*/
+/* =========================
+   DOWNLOAD
+========================= */
 
 if (downloadBtn) {
+
   downloadBtn.addEventListener(
     "click",
     () => {
+
       const text =
         output?.value || "";
 
       if (!text.trim()) {
+
         showStatus(
           "There is no SRT content to download.",
           "error"
@@ -598,6 +607,7 @@ if (downloadBtn) {
 
         return;
       }
+
 
       const blob =
         new Blob(
@@ -608,48 +618,43 @@ if (downloadBtn) {
           }
         );
 
+
       const url =
-        URL.createObjectURL(
-          blob
-        );
+        URL.createObjectURL(blob);
+
 
       const link =
-        document.createElement(
-          "a"
-        );
+        document.createElement("a");
 
-      link.href =
-        url;
+
+      link.href = url;
 
       link.download =
         "myanmar-subtitles.srt";
 
-      document.body.appendChild(
-        link
-      );
+
+      document.body.appendChild(link);
 
       link.click();
 
       link.remove();
 
-      URL.revokeObjectURL(
-        url
-      );
+      URL.revokeObjectURL(url);
     }
   );
 }
 
 
-/*
-  -------------------------------------------------------
-  Copy SRT
-  -------------------------------------------------------
-*/
+/* =========================
+   COPY
+========================= */
 
 if (copyBtn) {
+
   copyBtn.addEventListener(
     "click",
     async () => {
+
       const text =
         output?.value || "";
 
@@ -657,7 +662,9 @@ if (copyBtn) {
         return;
       }
 
+
       try {
+
         await navigator.clipboard.writeText(
           text
         );
@@ -666,20 +673,13 @@ if (copyBtn) {
           "SRT copied to clipboard.",
           "success"
         );
-      } catch (
-        error
-      ) {
-        /*
-          Fallback for older browsers.
-        */
+
+      } catch (error) {
 
         output.focus();
-
         output.select();
 
-        document.execCommand(
-          "copy"
-        );
+        document.execCommand("copy");
 
         showStatus(
           "SRT copied to clipboard.",
@@ -691,26 +691,16 @@ if (copyBtn) {
 }
 
 
-/*
-  -------------------------------------------------------
-  Initial state
-  -------------------------------------------------------
-*/
+/* =========================
+   INITIAL
+========================= */
 
-if (
-  fileInput?.files?.[0]
-) {
+progressBox.style.display =
+  "none";
+
+
+if (fileInput?.files?.[0]) {
   showFile(
     fileInput.files[0]
   );
-}
-
-if (progressBox) {
-  progressBox.hidden =
-    true;
-}
-
-if (resultBox) {
-  resultBox.hidden =
-    true;
 }
