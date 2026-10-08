@@ -320,7 +320,6 @@ Do not use code fences.
     ]),
 
     config: {
-      temperature: 0.1,
       maxOutputTokens: 65536,
 
       responseMimeType: "application/json",
