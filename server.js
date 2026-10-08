@@ -479,7 +479,6 @@ OUTPUT FORMAT:
     contents: prompt,
 
     config: {
-      temperature: 0.15,
       maxOutputTokens: 65536,
 
       responseMimeType: "application/json",
