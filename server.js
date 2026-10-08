@@ -35,7 +35,7 @@ const ai = new GoogleGenAI({
   - Structured output supported
   - 65k output tokens
 */
-const MODEL = "gemini-3.7-flash";
+const MODEL = "gemini-3.5-flash-lite";
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
