@@ -3,16 +3,12 @@ import multer from "multer";
 import dotenv from "dotenv";
 import ffmpegPath from "ffmpeg-static";
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { randomUUID } from "crypto";
 
-import {
-  GoogleGenAI,
-  createUserContent,
-  createPartFromUri
-} from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
@@ -43,74 +39,6 @@ const upload = multer({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const jobs = new Map();
-
-/* =========================
-   JOB HELPERS
-========================= */
-
-function createJob() {
-  const id = randomUUID();
-
-  const job = {
-    id,
-    progress: 0,
-    title: "Starting",
-    message: "Preparing your file...",
-    status: "running",
-    srt: "",
-    error: null,
-    createdAt: Date.now()
-  };
-
-  jobs.set(id, job);
-
-  return job;
-}
-
-function updateJob(id, progress, title, message) {
-  const job = jobs.get(id);
-
-  if (!job) return;
-
-  job.progress = progress;
-  job.title = title;
-  job.message = message;
-}
-
-function completeJob(id, srt) {
-  const job = jobs.get(id);
-
-  if (!job) return;
-
-  job.progress = 100;
-  job.title = "Complete";
-  job.message = "SRT generation completed successfully.";
-  job.status = "complete";
-  job.srt = srt;
-}
-
-function failJob(id, error) {
-  const job = jobs.get(id);
-
-  if (!job) return;
-
-  job.status = "error";
-  job.error = String(error);
-  job.title = "Error";
-  job.message = String(error);
-}
-
-setInterval(() => {
-  const now = Date.now();
-
-  for (const [id, job] of jobs) {
-    if (now - job.createdAt > 30 * 60 * 1000) {
-      jobs.delete(id);
-    }
-  }
-}, 5 * 60 * 1000);
-
 
 /* =========================
    FFMPEG
@@ -131,8 +59,9 @@ function extractAudio(inputPath, outputPath) {
       "-ar",
       "16000",
 
+      // Small speech-optimized MP3
       "-b:a",
-      "64k",
+      "24k",
 
       outputPath
     ]);
@@ -151,7 +80,7 @@ function extractAudio(inputPath, outputPath) {
       } else {
         reject(
           new Error(
-            `FFmpeg audio extraction failed: ${stderr.slice(-1500)}`
+            "FFmpeg failed: " + stderr.slice(-1200)
           )
         );
       }
@@ -161,28 +90,31 @@ function extractAudio(inputPath, outputPath) {
 
 
 /* =========================
-   SRT CLEANING
+   CLEAN SRT
 ========================= */
 
 function cleanSrt(text) {
   if (!text) {
-    throw new Error("Gemini returned empty SRT.");
+    throw new Error("AI returned empty result.");
   }
 
-  let srt = text.trim();
+  let srt = String(text).trim();
 
-  // Remove markdown code fences if Gemini adds them.
+  // Remove markdown fences
   srt = srt
     .replace(/^```srt\s*/i, "")
+    .replace(/^```text\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
 
-  // Remove accidental leading text before first subtitle.
-  const firstIndex = srt.search(/\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s+-->/);
+  // Find first subtitle number
+  const first = srt.search(
+    /\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3}/
+  );
 
-  if (firstIndex > 0) {
-    srt = srt.slice(firstIndex);
+  if (first > 0) {
+    srt = srt.slice(first);
   }
 
   return srt.trim();
@@ -190,54 +122,20 @@ function cleanSrt(text) {
 
 
 /* =========================
-   GEMINI SRT GENERATION
+   GENERATE SRT
 ========================= */
 
-async function generateSrtFromAudio(
+async function generateSrt(
   audioPath,
   sourceLanguage,
-  targetLanguage,
-  onProgress
+  targetLanguage
 ) {
-  onProgress(20, "Uploading", "Uploading audio to Gemini...");
-
-  const uploadedFile = await ai.files.upload({
-    file: audioPath,
-    config: {
-      mimeType: "audio/mpeg"
-    }
-  });
-
-  if (!uploadedFile || !uploadedFile.uri) {
-    throw new Error("Gemini file upload failed.");
-  }
-
-  onProgress(30, "Preparing AI", "Gemini is preparing the audio...");
-
-  // Wait until Gemini has finished processing the uploaded file.
-  let currentFile = uploadedFile;
-
-  while (
-    !currentFile.state ||
-    String(currentFile.state) !== "ACTIVE"
-  ) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    currentFile = await ai.files.get({
-      name: currentFile.name
-    });
-  }
-
-  onProgress(
-    38,
-    "Transcribing",
-    "AI is listening to the speech..."
-  );
+  const audioSize = fs.statSync(audioPath).size;
 
   const prompt = `
-You are an expert subtitle generator.
+You are a professional subtitle generator.
 
-Create a complete SRT subtitle file from the provided audio.
+Listen to the ENTIRE audio.
 
 SOURCE LANGUAGE:
 ${sourceLanguage}
@@ -245,187 +143,153 @@ ${sourceLanguage}
 TARGET LANGUAGE:
 ${targetLanguage}
 
-IMPORTANT REQUIREMENTS:
+TASK:
+Create a complete SRT subtitle file.
 
-1. Listen to the entire audio from beginning to end.
-2. Do not skip any spoken content.
-3. Detect the actual speech timing from the audio.
-4. Create accurate subtitle start and end timestamps.
-5. Translate the spoken content into the TARGET LANGUAGE.
-6. Preserve the meaning and natural speaking style.
-7. For Myanmar/Burmese, use natural Unicode Myanmar text.
-8. Keep each subtitle readable.
-9. Prefer short subtitle lines.
-10. Do not merge unrelated sentences.
-11. Do not invent speech that is not present.
-12. Do not add explanations.
-13. Do not add a title.
-14. Do not use Markdown.
-15. Do not use code fences.
-16. Return ONLY valid SRT.
+IMPORTANT:
 
-SRT FORMAT:
+- Process the whole audio from beginning to end.
+- Do not skip spoken sentences.
+- Detect the actual timing of speech from the audio.
+- Use accurate start and end timestamps.
+- Translate naturally into the target language.
+- If target language is Myanmar (Burmese), use natural Myanmar Unicode.
+- Keep subtitles short and easy to read.
+- Do not invent dialogue.
+- Do not summarize.
+- Do not explain anything.
+- Do not add a title.
+- Do not use Markdown.
+- Do not use code fences.
+
+Return ONLY valid SRT.
+
+Required format:
 
 1
 00:00:00,000 --> 00:00:02,500
-Subtitle text
+Translated subtitle
 
 2
 00:00:02,500 --> 00:00:05,000
-Subtitle text
+Translated subtitle
 
-Continue until the entire audio has been processed.
-
-The final answer MUST be a complete SRT file and nothing else.
+Continue until the END of the audio.
 `;
 
-  const result = await ai.models.generateContent({
+  /*
+    For small audio files we send the audio directly.
+    This avoids an additional Files API upload.
+  */
+
+  if (audioSize <= 18 * 1024 * 1024) {
+
+    const audioBase64 = fs.readFileSync(
+      audioPath
+    ).toString("base64");
+
+    const response = await ai.models.generateContent({
+      model: MODEL,
+
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: prompt
+            },
+            {
+              inlineData: {
+                mimeType: "audio/mpeg",
+                data: audioBase64
+              }
+            }
+          ]
+        }
+      ],
+
+      config: {
+        thinkingConfig: {
+          thinkingLevel: "low"
+        },
+
+        temperature: 0.1,
+
+        maxOutputTokens: 65536
+      }
+    });
+
+    return cleanSrt(response.text);
+  }
+
+
+  /*
+    If the extracted audio is larger,
+    use Google's File API.
+  */
+
+  console.log(
+    "Audio is larger than 18MB. Using Gemini Files API."
+  );
+
+  const uploaded = await ai.files.upload({
+    file: audioPath,
+    config: {
+      mimeType: "audio/mpeg"
+    }
+  });
+
+  if (!uploaded?.uri) {
+    throw new Error(
+      "Gemini audio upload failed."
+    );
+  }
+
+  const response = await ai.models.generateContent({
     model: MODEL,
 
-    contents: createUserContent([
-      createPartFromUri(
-        currentFile.uri,
-        currentFile.mimeType || "audio/mpeg"
-      ),
-      prompt
-    ]),
+    contents: [
+      prompt,
+      uploaded
+    ],
 
     config: {
-      temperature: 0.2,
+      thinkingConfig: {
+        thinkingLevel: "low"
+      },
+
+      temperature: 0.1,
+
       maxOutputTokens: 65536
     }
   });
 
-  onProgress(
-    88,
-    "Building SRT",
-    "Formatting subtitle file..."
-  );
-
-  const text = result.text;
-
-  if (!text) {
-    throw new Error("Gemini returned no subtitle text.");
-  }
-
-  const srt = cleanSrt(text);
-
-  if (!/\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s+-->/.test(srt)) {
-    throw new Error(
-      "Gemini response was not a valid SRT file."
-    );
-  }
-
-  onProgress(
-    96,
-    "Finalizing",
-    "Preparing SRT download..."
-  );
-
-  return srt;
+  return cleanSrt(response.text);
 }
 
 
 /* =========================
-   JOB PROCESS
-========================= */
-
-async function processJob(
-  jobId,
-  mediaPath,
-  sourceLanguage,
-  targetLanguage
-) {
-  let audioPath = null;
-
-  try {
-    updateJob(
-      jobId,
-      2,
-      "Preparing",
-      "Checking uploaded video..."
-    );
-
-    audioPath = path.join(
-      os.tmpdir(),
-      `${randomUUID()}.mp3`
-    );
-
-    updateJob(
-      jobId,
-      8,
-      "Extracting audio",
-      "Preparing audio for transcription..."
-    );
-
-    await extractAudio(mediaPath, audioPath);
-
-    updateJob(
-      jobId,
-      15,
-      "Audio ready",
-      "Audio extraction completed."
-    );
-
-    const srt = await generateSrtFromAudio(
-      audioPath,
-      sourceLanguage,
-      targetLanguage,
-      (progress, title, message) => {
-        updateJob(
-          jobId,
-          progress,
-          title,
-          message
-        );
-      }
-    );
-
-    completeJob(jobId, srt);
-
-  } catch (error) {
-    console.error("JOB ERROR:", error);
-
-    failJob(
-      jobId,
-      error?.message || String(error)
-    );
-
-  } finally {
-    try {
-      if (mediaPath && fs.existsSync(mediaPath)) {
-        fs.unlinkSync(mediaPath);
-      }
-    } catch {}
-
-    try {
-      if (audioPath && fs.existsSync(audioPath)) {
-        fs.unlinkSync(audioPath);
-      }
-    } catch {}
-  }
-}
-
-
-/* =========================
-   START JOB
+   MAIN API
 ========================= */
 
 app.post(
-  "/api/start-job",
-  upload.any(),
+  "/api/generate-srt",
+  upload.single("media"),
   async (req, res) => {
-    try {
-      const file =
-        req.files?.find(f => f.fieldname === "media") ||
-        req.files?.[0];
 
-      if (!file) {
+    let audioPath = null;
+    let videoPath = null;
+
+    try {
+
+      if (!req.file) {
         return res.status(400).json({
           ok: false,
-          error: "No media file uploaded."
+          error: "Please upload a video file."
         });
       }
+
+      videoPath = req.file.path;
 
       const sourceLanguage =
         req.body?.sourceLanguage ||
@@ -435,61 +299,98 @@ app.post(
         req.body?.targetLanguage ||
         "Myanmar (Burmese)";
 
-      const job = createJob();
+      console.log(
+        "Received:",
+        req.file.originalname
+      );
 
-      // Start processing in background.
-      processJob(
-        job.id,
-        file.path,
+      console.log(
+        "Source:",
+        sourceLanguage
+      );
+
+      console.log(
+        "Target:",
+        targetLanguage
+      );
+
+      /*
+        Create temporary audio file.
+      */
+
+      audioPath = path.join(
+        os.tmpdir(),
+        `${randomUUID()}.mp3`
+      );
+
+      console.log(
+        "Extracting audio..."
+      );
+
+      await extractAudio(
+        videoPath,
+        audioPath
+      );
+
+      console.log(
+        "Audio ready:",
+        fs.statSync(audioPath).size,
+        "bytes"
+      );
+
+      console.log(
+        "Sending audio to Gemini..."
+      );
+
+      const srt = await generateSrt(
+        audioPath,
         sourceLanguage,
         targetLanguage
       );
 
+      console.log(
+        "SRT generated."
+      );
+
       return res.json({
         ok: true,
-        jobId: job.id
+        srt
       });
 
     } catch (error) {
-      console.error(error);
+
+      console.error(
+        "SRT ERROR:",
+        error
+      );
 
       return res.status(500).json({
         ok: false,
-        error: error?.message || String(error)
+        error:
+          error?.message ||
+          String(error)
       });
+
+    } finally {
+
+      try {
+        if (
+          videoPath &&
+          fs.existsSync(videoPath)
+        ) {
+          fs.unlinkSync(videoPath);
+        }
+      } catch {}
+
+      try {
+        if (
+          audioPath &&
+          fs.existsSync(audioPath)
+        ) {
+          fs.unlinkSync(audioPath);
+        }
+      } catch {}
     }
-  }
-);
-
-
-/* =========================
-   JOB STATUS
-========================= */
-
-app.get(
-  "/api/job/:jobId",
-  (req, res) => {
-    const job = jobs.get(req.params.jobId);
-
-    if (!job) {
-      return res.status(404).json({
-        ok: false,
-        error: "Job not found."
-      });
-    }
-
-    return res.json({
-      ok: true,
-      jobId: job.id,
-      progress: job.progress,
-      title: job.title,
-      message: job.message,
-      status: job.status,
-      srt: job.status === "complete"
-        ? job.srt
-        : null,
-      error: job.error
-    });
   }
 );
 
@@ -501,25 +402,26 @@ app.get(
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    service: "video-to-srt",
     model: MODEL
   });
 });
 
 
 /* =========================
-   STATIC WEBSITE
+   WEBSITE
 ========================= */
 
-app.use(express.static(process.cwd()));
+app.use(
+  express.static(process.cwd())
+);
 
 
 /* =========================
-   START SERVER
+   START
 ========================= */
 
 app.listen(PORT, () => {
   console.log(
-    `Video-to-SRT server running on port ${PORT}`
+    `Video-to-SRT running on port ${PORT}`
   );
 });
