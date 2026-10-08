@@ -24,9 +24,7 @@ if (!GEMINI_API_KEY) {
 const ai = new GoogleGenAI({
   apiKey: GEMINI_API_KEY
 });
-
-const MODEL = "gemini-3.8-flash";
-
+const MODEL = "gemini-3.5-flash-lite";
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
 const upload = multer({
