@@ -34,7 +34,7 @@ fileInput?.addEventListener(
 
     if (
       file.size >
-      100 * 1024 * 1024
+      500 * 1024 * 1024
     ) {
       alert(
         "Maximum file size is 100MB."
