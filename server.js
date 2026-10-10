@@ -791,6 +791,104 @@ app.use(
    START
 ========================= */
 
+// Burn Myanmar subtitles into an MP4 video
+app.post("/api/burn-subtitles", upload.single("media"), async (req, res) => {
+  let srtPath;
+  let outputPath;
+
+  const cleanup = async () => {
+    for (const filePath of [req.file?.path, srtPath, outputPath]) {
+      if (filePath) {
+        try {
+          await fs.promises.unlink(filePath);
+        } catch {}
+      }
+    }
+  };
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Please upload a video file." });
+    }
+
+    const srt = req.body?.srt;
+
+    if (typeof srt !== "string" || !srt.trim()) {
+      await cleanup();
+      return res.status(400).json({ error: "Please generate subtitles first." });
+    }
+
+    const id = randomUUID();
+    srtPath = path.join(os.tmpdir(), `${id}.srt`);
+    outputPath = path.join(os.tmpdir(), `${id}-myanmar.mp4`);
+
+    await fs.promises.writeFile(srtPath, "\uFEFF" + srt, "utf8");
+
+    // Escape the subtitle file path for FFmpeg.
+    const escapedSrtPath = srtPath
+      .replace(/\\/g, "\\\\")
+      .replace(/:/g, "\\:")
+      .replace(/'/g, "\\'");
+
+    const subtitleFilter =
+      `subtitles='${escapedSrtPath}':` +
+      "force_style='FontSize=22,Outline=2,Shadow=1," +
+      "Alignment=2,MarginV=28'";
+
+    await new Promise((resolve, reject) => {
+      const args = [
+        "-y",
+        "-i", req.file.path,
+        "-vf", subtitleFilter,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        outputPath
+      ];
+
+      const ffmpeg = spawn(ffmpegPath, args);
+      let errorOutput = "";
+
+      ffmpeg.stderr.on("data", (data) => {
+        errorOutput += data.toString();
+      });
+
+      ffmpeg.on("error", reject);
+
+      ffmpeg.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(
+            new Error(errorOutput.slice(-2000) || "FFmpeg failed.")
+          );
+        }
+      });
+    });
+
+    res.download(outputPath, "myanmar-subtitled.mp4", async (err) => {
+      await cleanup();
+
+      if (err && !res.headersSent) {
+        res.status(500).json({ error: "MP4 download failed." });
+      }
+    });
+  } catch (error) {
+    console.error("Burn subtitles error:", error);
+    await cleanup();
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Could not create the subtitled video. Please try a smaller video."
+      });
+    }
+  }
+});
 app.listen(PORT, () => {
   console.log(
     `Video-to-SRT server running on port ${PORT}`
